@@ -155,3 +155,7 @@ You can also revoke `kvidre`'s access to your account at any time in X under **S
 | `429` | Rate limited by X. Wait a few minutes. |
 | `could not listen on 127.0.0.1:8723` | Another program is using port 8723. Close it and try again. |
 | `not logged in` | Run `kvidre login`. |
+
+## License
+
+MIT. See [LICENSE](LICENSE).
