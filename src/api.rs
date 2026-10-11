@@ -164,7 +164,13 @@ impl Client {
         Ok(check(resp)?.json()?)
     }
 
-    fn timeline(&mut self, path: &str, count: u32, page: Option<&str>) -> Result<Page> {
+    fn timeline(
+        &mut self,
+        path: &str,
+        count: u32,
+        page: Option<&str>,
+        exclude: Option<&str>,
+    ) -> Result<Page> {
         let url = format!("{BASE}{path}");
         let mut query = vec![
             ("max_results", count.to_string()),
@@ -175,22 +181,32 @@ impl Client {
         if let Some(token) = page {
             query.push(("pagination_token", token.into()));
         }
+        if let Some(exclude) = exclude {
+            query.push(("exclude", exclude.into()));
+        }
         self.send(|http| http.get(&url).query(&query))
     }
 
-    /// Home timeline, newest first. X accepts 1–100.
-    pub fn home(&mut self, count: u32, page: Option<&str>) -> Result<Page> {
+    /// Posts from you and the accounts you follow, newest first. X accepts 1–100.
+    /// With `originals_only`, X leaves out replies and reposts, so they aren't billed.
+    pub fn following(
+        &mut self,
+        count: u32,
+        page: Option<&str>,
+        originals_only: bool,
+    ) -> Result<Page> {
         let path = format!(
             "/users/{}/timelines/reverse_chronological",
             self.session.user_id
         );
-        self.timeline(&path, count.clamp(1, 100), page)
+        let exclude = originals_only.then_some("replies,retweets");
+        self.timeline(&path, count.clamp(1, 100), page, exclude)
     }
 
     /// Posts mentioning you. X accepts 5–100.
     pub fn mentions(&mut self, count: u32, page: Option<&str>) -> Result<Page> {
         let path = format!("/users/{}/mentions", self.session.user_id);
-        self.timeline(&path, count.clamp(5, 100), page)
+        self.timeline(&path, count.clamp(5, 100), page, None)
     }
 
     pub fn lookup_user(&mut self, username: &str) -> Result<User> {
@@ -202,7 +218,7 @@ impl Client {
     /// A user's recent posts. X accepts 5–100.
     pub fn user_posts(&mut self, user_id: &str, count: u32, page: Option<&str>) -> Result<Page> {
         let path = format!("/users/{user_id}/tweets");
-        self.timeline(&path, count.clamp(5, 100), page)
+        self.timeline(&path, count.clamp(5, 100), page, None)
     }
 
     pub fn post(&mut self, text: &str, reply_to: Option<&str>) -> Result<Created> {

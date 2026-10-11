@@ -39,11 +39,14 @@ enum Command {
     Logout,
     /// Show the logged-in account
     Whoami,
-    /// Read your home timeline, newest first
+    /// Read original posts from people you follow, newest first
     #[command(visible_alias = "t")]
     Timeline {
         #[arg(short = 'n', long, default_value_t = 10)]
         count: u32,
+        /// Also include replies and reposts
+        #[arg(short, long)]
+        all: bool,
     },
     /// Read posts that mention you
     #[command(visible_alias = "m")]
@@ -97,7 +100,9 @@ fn main() -> Result<()> {
             let session = Session::load()?;
             println!("@{} (id {})", session.username, session.user_id);
         }
-        Command::Timeline { count } => print_page(&Client::load()?.home(count, None)?),
+        Command::Timeline { count, all } => {
+            print_page(&Client::load()?.following(count, None, !all)?)
+        }
         Command::Mentions { count } => print_page(&Client::load()?.mentions(count, None)?),
         Command::User { username, count } => {
             let mut client = Client::load()?;

@@ -33,15 +33,26 @@ pub fn run() -> Result<()> {
 
 #[derive(Clone, PartialEq)]
 enum Feed {
-    Home,
+    /// Posts from people you follow; by default without replies and reposts.
+    Following {
+        originals_only: bool,
+    },
     Mentions,
-    User { id: String, username: String },
+    User {
+        id: String,
+        username: String,
+    },
 }
 
 impl Feed {
     fn title(&self) -> String {
         match self {
-            Feed::Home => "Home".into(),
+            Feed::Following {
+                originals_only: true,
+            } => "Following".into(),
+            Feed::Following {
+                originals_only: false,
+            } => "Following (all)".into(),
             Feed::Mentions => "Mentions".into(),
             Feed::User { username, .. } => format!("@{username}"),
         }
@@ -101,7 +112,12 @@ impl Ui {
         Self {
             me_id,
             me,
-            tabs: vec![Tab::new(Feed::Home), Tab::new(Feed::Mentions)],
+            tabs: vec![
+                Tab::new(Feed::Following {
+                    originals_only: true,
+                }),
+                Tab::new(Feed::Mentions),
+            ],
             active: 0,
             mode: Mode::Browse,
             status: String::new(),
@@ -352,13 +368,14 @@ fn render_confirm_delete(frame: &mut Frame) {
 }
 
 fn render_help(frame: &mut Frame) {
-    const KEYS: [(&str, &str); 14] = [
+    const KEYS: [(&str, &str); 15] = [
         ("j / k  ↓ / ↑", "move between posts"),
         ("g / G", "first / last post"),
         ("PgDn / PgUp", "jump 5 posts"),
         ("tab / 1-9", "switch feed"),
         ("R", "reload feed (paid read)"),
         ("m", "load older posts (paid read)"),
+        ("f", "Following: show/hide replies & reposts"),
         ("c", "write a new post"),
         ("r", "reply to selected post"),
         ("o / Enter", "open post in browser"),
@@ -368,7 +385,7 @@ fn render_help(frame: &mut Frame) {
         ("?", "toggle this help"),
         ("q / Ctrl+C", "quit"),
     ];
-    let area = popup(frame, 52, KEYS.len() as u16 + 2);
+    let area = popup(frame, 58, KEYS.len() as u16 + 2);
     let lines: Vec<Line> = KEYS
         .iter()
         .map(|(key, action)| {
@@ -559,6 +576,16 @@ impl App {
                     self.ui.active -= 1;
                 }
             }
+            KeyCode::Char('f') => match &mut self.ui.tab_mut().feed {
+                Feed::Following { originals_only } => {
+                    *originals_only = !*originals_only;
+                    // The cached posts no longer match the filter.
+                    self.load(terminal, false)?;
+                }
+                _ => {
+                    self.ui.status = "f toggles replies and reposts in Following only.".into();
+                }
+            },
             KeyCode::Char('?') => self.ui.mode = Mode::Help,
             _ => {}
         }
@@ -589,7 +616,9 @@ impl App {
         self.busy(terminal, &format!("Loading {}…", feed.title()))?;
         let token = token.as_deref();
         let result = match &feed {
-            Feed::Home => self.client.home(PAGE_SIZE, token),
+            Feed::Following { originals_only } => {
+                self.client.following(PAGE_SIZE, token, *originals_only)
+            }
             Feed::Mentions => self.client.mentions(PAGE_SIZE, token),
             Feed::User { id, .. } => self.client.user_posts(id, PAGE_SIZE, token),
         };
@@ -631,12 +660,16 @@ impl App {
                     text: body.to_string(),
                 };
                 self.ui.status = format!("Posted {}", mine.url());
-                // Show a new post at the top of Home without paying to reload it.
+                // Show a new post at the top of Following without paying to reload it.
                 if reply_to.is_none()
-                    && let Some(home) = self.ui.tabs.iter_mut().find(|t| t.feed == Feed::Home)
+                    && let Some(following) = self
+                        .ui
+                        .tabs
+                        .iter_mut()
+                        .find(|t| matches!(t.feed, Feed::Following { .. }))
                 {
-                    home.posts.insert(0, mine);
-                    home.list.select(Some(0));
+                    following.posts.insert(0, mine);
+                    following.list.select(Some(0));
                 }
             }
             Err(e) => {
@@ -735,10 +768,10 @@ mod tests {
         let screen = screen(&mut ui, 80, 16);
         println!("{screen}");
         let rows: Vec<&str> = screen.lines().collect();
-        assert!(rows[0].starts_with(" kvidre   1 Home"));
+        assert!(rows[0].starts_with(" kvidre   1 Following"));
         assert_eq!(rows[1], "", "blank row between header and posts");
         assert!(rows[2].starts_with("▌ @yunta"));
-        assert!(screen.contains("1 Home"));
+        assert!(screen.contains("1 Following"));
         assert!(screen.contains("2 Mentions"));
         assert!(screen.contains("@yoda"));
         assert!(screen.contains("▌ @yunta Yunta ·"));
@@ -777,6 +810,7 @@ mod tests {
         ui.mode = Mode::Help;
         let screen = screen(&mut ui, 80, 24);
         assert!(screen.contains("reload feed (paid read)"));
+        assert!(screen.contains("Following: show/hide replies & reposts"));
     }
 
     #[test]
@@ -786,6 +820,16 @@ mod tests {
         assert_eq!(ui.tab().posts.len(), 4);
         assert_eq!(ui.tab().list.selected(), Some(2));
         assert!((ui.spent - 0.030).abs() < 1e-9);
+    }
+
+    #[test]
+    fn following_tab_title_shows_filter() {
+        let mut ui = loaded_ui();
+        assert!(screen(&mut ui, 80, 6).contains("1 Following │ 2 Mentions"));
+        ui.tabs[0].feed = Feed::Following {
+            originals_only: false,
+        };
+        assert!(screen(&mut ui, 80, 6).contains("1 Following (all) │ 2 Mentions"));
     }
 
     #[test]

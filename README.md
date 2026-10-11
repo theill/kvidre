@@ -3,8 +3,9 @@
 *Kvidre* is Danish for "to chirp". It's a small terminal client for X (Twitter). Read your timeline and mentions, then post and reply, from a full-screen TUI or from plain commands you can script. It uses the official X API v2.
 
 ```
- 1 Home │ 2 Mentions │ 3 @robin                                        @you
-▌ @sparrow Sparrow · today 08:31 · ⟲ @robin
+ kvidre   1 Following │ 2 Mentions │ 3 @robin                         @you
+
+▌ @sparrow Sparrow · today 08:31
 ▌ Spring is here. The first chirp of the year is always the loudest one.
 ▌
   @wren Wren · today 08:12
@@ -18,7 +19,8 @@ c post · r reply · o open · R reload · m more · ? help     ≈$0.050 this s
 
 ## Features
 
-- **TUI** with Home, Mentions and per-user tabs. Reposts show the full original post, long posts aren't cut off, and times are in your local time zone.
+- **A calm Following feed.** By default you see only original posts from people you follow, newest first, with no algorithm, replies or reposts. Press `f` to bring replies and reposts back.
+- **TUI** with Following, Mentions and per-user tabs. Reposts show the full original post, long posts aren't cut off, and times are in your local time zone.
 - **Compose, reply, open in browser and delete** your own posts without leaving the terminal.
 - **Scriptable CLI.** For example `kvidre post "hello"`, `echo "text" | kvidre post`, or `kvidre timeline -n 5`.
 - **Keeps API costs down.** Nothing loads in the background, and you see a running estimate of what the session has cost.
@@ -88,7 +90,9 @@ Your browser opens X's authorization page. Click **Authorize**, and the terminal
 
 ## Using the TUI
 
-Run `kvidre` with no arguments (or `kvidre tui`). Home loads when the TUI starts. The other tabs load the first time you open them, and after that only when you ask.
+Run `kvidre` with no arguments (or `kvidre tui`). The Following tab loads when the TUI starts. The other tabs load the first time you open them, and after that only when you ask.
+
+Following shows original posts from you and the accounts you follow, newest first. Replies and reposts are left out on X's side, so you aren't billed for them. Press `f` to include them; the tab title changes to "Following (all)".
 
 | Key | Action |
 |---|---|
@@ -98,6 +102,7 @@ Run `kvidre` with no arguments (or `kvidre tui`). Home loads when the TUI starts
 | `tab`, `1`–`9` | Switch tab |
 | `R` | Reload the current tab (paid read) |
 | `m` | Load older posts (paid read) |
+| `f` | Show or hide replies and reposts in Following (reloads) |
 | `c` | Write a new post. `Enter` sends, `Alt+Enter` adds a new line, `Esc` cancels. |
 | `r` | Reply to the selected post |
 | `o`, `Enter` | Open the selected post in your browser |
@@ -113,7 +118,8 @@ The compose box counts characters and warns you before you send a post containin
 Every TUI action is also a command, which is handy for scripts and quick posts:
 
 ```sh
-kvidre timeline -n 10        # your home timeline, newest first   (alias: t)
+kvidre timeline -n 10        # original posts from people you follow (alias: t)
+kvidre timeline --all        # ...including replies and reposts
 kvidre mentions              # posts mentioning you               (alias: m)
 kvidre user robin -n 5       # someone's recent posts             (alias: u)
 kvidre post "hello world"    # publish a post                     (alias: p)
