@@ -11,9 +11,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Tabs, Wrap,
-};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use std::process::Stdio;
 
@@ -235,19 +233,18 @@ impl Ui {
             return;
         }
 
-        // Room for the "▌ " highlight column and a right margin.
+        // Room for the "▌ " selection bar and a right margin.
         let width = (area.width as usize).saturating_sub(3).max(10);
         let now = Zoned::now();
+        // The list may hold an out-of-range index (e.g. after G) until it renders.
+        let selected = tab.list.selected().map(|i| i.min(tab.posts.len() - 1));
         let items: Vec<ListItem> = tab
             .posts
             .iter()
-            .map(|post| post_item(post, &now, width))
+            .enumerate()
+            .map(|(i, post)| post_item(post, &now, width, selected == Some(i)))
             .collect();
-        let list = List::new(items)
-            .highlight_symbol("▌ ")
-            .repeat_highlight_symbol(true)
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::new().yellow());
+        let list = List::new(items).highlight_style(Style::new().yellow());
         frame.render_stateful_widget(list, area, &mut self.tabs[self.active].list);
     }
 
@@ -266,8 +263,18 @@ impl Ui {
     }
 }
 
-fn post_item<'a>(post: &PostView, now: &Zoned, width: usize) -> ListItem<'a> {
-    let mut header = vec![Span::from(format!("@{}", post.username)).bold().cyan()];
+/// One post as a list item. The selection bar is drawn here rather than by the
+/// List, so it covers the post's lines but not the blank line separating posts.
+fn post_item<'a>(post: &PostView, now: &Zoned, width: usize, selected: bool) -> ListItem<'a> {
+    let bar = if selected {
+        Span::from("▌ ").yellow()
+    } else {
+        Span::from("  ")
+    };
+    let mut header = vec![
+        bar.clone(),
+        Span::from(format!("@{}", post.username)).bold().cyan(),
+    ];
     if !post.name.is_empty() {
         header.push(Span::from(format!(" {}", post.name)));
     }
@@ -280,7 +287,7 @@ fn post_item<'a>(post: &PostView, now: &Zoned, width: usize) -> ListItem<'a> {
     lines.extend(
         textwrap::wrap(&post.text, width)
             .into_iter()
-            .map(|line| Line::from(line.into_owned())),
+            .map(|line| Line::from(vec![bar.clone(), Span::from(line.into_owned())])),
     );
     lines.push(Line::default());
     ListItem::new(lines)
@@ -771,6 +778,12 @@ mod tests {
         assert!(rows[0].starts_with(" kvidre   1 Following"));
         assert_eq!(rows[1], "", "blank row between header and posts");
         assert!(rows[2].starts_with("▌ @yunta"));
+        assert!(rows[3].starts_with("▌ For now"));
+        assert_eq!(
+            rows[4], "",
+            "no selection bar on the blank line between posts"
+        );
+        assert!(rows[5].starts_with("  @yoda"));
         assert!(screen.contains("1 Following"));
         assert!(screen.contains("2 Mentions"));
         assert!(screen.contains("@yoda"));
@@ -830,6 +843,19 @@ mod tests {
             originals_only: false,
         };
         assert!(screen(&mut ui, 80, 6).contains("1 Following (all) │ 2 Mentions"));
+    }
+
+    #[test]
+    fn selection_bar_follows_selected_post() {
+        let mut ui = loaded_ui();
+        // G selects past the end until the list renders; the bar must clamp too.
+        ui.tab_mut().list.select_last();
+        let screen = screen(&mut ui, 80, 12);
+        let rows: Vec<&str> = screen.lines().collect();
+        assert!(rows[2].starts_with("  @yunta"));
+        assert!(rows[5].starts_with("▌ @yoda"));
+        assert!(rows[6].starts_with("▌ RT @gone"));
+        assert_eq!(rows[7], "");
     }
 
     #[test]
