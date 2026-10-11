@@ -19,8 +19,8 @@ tw whoami / tw logout
 2. Under **User authentication settings**, choose:
    - **OAuth 2.0**, app type **Native App** (public client, no secret needed)
    - App permissions: **Read and write**
-   - Callback URI: `http://localhost:8723/callback`
-   - Website URL: anything (e.g. your homepage)
+   - Callback URI: `http://127.0.0.1:8723/callback`
+   - Website URL, if asked: anything (e.g. your homepage)
 3. Copy the **OAuth 2.0 Client ID** (not the API key).
 4. Buy a few dollars of credits and set a **spending limit**. The API is pay-per-use.
 5. Install and log in:

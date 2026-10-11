@@ -15,8 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const AUTHORIZE_URL: &str = "https://x.com/i/oauth2/authorize";
 const TOKEN_URL: &str = "https://api.x.com/2/oauth2/token";
 const ME_URL: &str = "https://api.x.com/2/users/me";
-// Must match a callback URL registered on the app in the X developer console.
-pub const REDIRECT_URI: &str = "http://localhost:8723/callback";
+// Must exactly match a callback URL registered in the X developer console.
+// X requires 127.0.0.1 rather than localhost for local callbacks.
+pub const REDIRECT_URI: &str = "http://127.0.0.1:8723/callback";
 const LISTEN_ADDR: &str = "127.0.0.1:8723";
 const SCOPES: &str = "tweet.read tweet.write users.read offline.access";
 
