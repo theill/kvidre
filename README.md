@@ -1,10 +1,10 @@
-# tw
+# kvidre
 
-A tiny X/Twitter client for reading and posting a little, using the official X API v2.
+*Kvidre* is Danish for "to chirp". It's a tiny X/Twitter client for reading and posting a little, using the official X API v2.
 
 ## TUI
 
-Run `tw` with no arguments (or `tw tui`) to open the terminal UI. It has Home and Mentions tabs, and you can open tabs for other users.
+Run `kvidre` with no arguments (or `kvidre tui`) to open the terminal UI. It has Home and Mentions tabs, and you can open tabs for other users.
 
 | Key | Action |
 |---|---|
@@ -22,14 +22,14 @@ Every read is paid, so a feed only loads when you first open it and when you pre
 ## CLI
 
 ```
-tw timeline -n 10        # home timeline, newest first   (alias: t)
-tw mentions              # posts mentioning you          (alias: m)
-tw user jack -n 5        # someone's recent posts        (alias: u)
-tw post "hello world"    # publish                       (alias: p)
-echo "from stdin" | tw post
-tw reply https://x.com/jack/status/20 "nice"            (alias: r)
-tw delete <id-or-url>
-tw whoami / tw logout
+kvidre timeline -n 10      # home timeline, newest first   (alias: t)
+kvidre mentions            # posts mentioning you          (alias: m)
+kvidre user jack -n 5      # someone's recent posts        (alias: u)
+kvidre post "hello world"  # publish                       (alias: p)
+echo "from stdin" | kvidre post
+kvidre reply https://x.com/jack/status/20 "nice"           (alias: r)
+kvidre delete <id-or-url>
+kvidre whoami / kvidre logout
 ```
 
 ## Setup
@@ -46,13 +46,13 @@ tw whoami / tw logout
 
 ```sh
 cargo install --path .
-tw login --client-id YOUR_CLIENT_ID
+kvidre login --client-id YOUR_CLIENT_ID
 ```
 
-`tw` keeps the client ID in `~/.config/tw/config.json`. It keeps tokens in `~/.config/tw/session.json` with mode 0600, and refreshes them automatically.
+`kvidre` keeps the client ID in `~/.config/kvidre/config.json`. It keeps tokens in `~/.config/kvidre/session.json` with mode 0600, and refreshes them automatically.
 
 ## Cost
 
 X charges per request. Reported rates are about $0.005 per post read and $0.015 per post created, and a post with a URL costs much more (around $0.20). Check the developer console for current prices.
 
-After each read, `tw` prints an estimate to stderr. Commands that read posts default to small counts. Mentions and user posts can't go below 5, because that's X's minimum.
+After each read, `kvidre` prints an estimate to stderr. Commands that read posts default to small counts. Mentions and user posts can't go below 5, because that's X's minimum.

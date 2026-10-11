@@ -21,7 +21,7 @@ pub const REDIRECT_URI: &str = "http://127.0.0.1:8723/callback";
 const LISTEN_ADDR: &str = "127.0.0.1:8723";
 const SCOPES: &str = "tweet.read tweet.write users.read offline.access";
 
-/// App credentials from the X developer console (~/.config/tw/config.json).
+/// App credentials from the X developer console (~/.config/kvidre/config.json).
 #[derive(Serialize, Deserialize)]
 pub struct Config {
     pub client_id: String,
@@ -30,7 +30,7 @@ pub struct Config {
     pub client_secret: Option<String>,
 }
 
-/// Logged-in user's tokens (~/.config/tw/session.json, mode 0600).
+/// Logged-in user's tokens (~/.config/kvidre/session.json, mode 0600).
 #[derive(Serialize, Deserialize)]
 pub struct Session {
     pub access_token: String,
@@ -50,7 +50,7 @@ struct TokenResponse {
 fn config_dir() -> Result<PathBuf> {
     let dir = dirs::config_dir()
         .context("no config directory")?
-        .join("tw");
+        .join("kvidre");
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -71,7 +71,7 @@ impl Config {
     pub fn load() -> Result<Self> {
         let path = config_dir()?.join("config.json");
         let raw = fs::read_to_string(&path).map_err(|_| {
-            anyhow!("no client id configured; run `tw login --client-id <ID>` first")
+            anyhow!("no client id configured; run `kvidre login --client-id <ID>` first")
         })?;
         Ok(serde_json::from_str(&raw)?)
     }
@@ -85,7 +85,7 @@ impl Session {
     pub fn load() -> Result<Self> {
         let path = config_dir()?.join("session.json");
         let raw =
-            fs::read_to_string(&path).map_err(|_| anyhow!("not logged in; run `tw login`"))?;
+            fs::read_to_string(&path).map_err(|_| anyhow!("not logged in; run `kvidre login`"))?;
         Ok(serde_json::from_str(&raw)?)
     }
 
@@ -110,7 +110,7 @@ impl Session {
         let refresh_token = self
             .refresh_token
             .clone()
-            .context("session expired and has no refresh token; run `tw login`")?;
+            .context("session expired and has no refresh token; run `kvidre login`")?;
         let tokens = request_token(
             http,
             config,
@@ -119,7 +119,7 @@ impl Session {
                 ("refresh_token", &refresh_token),
             ],
         )
-        .context("refreshing token failed; run `tw login`")?;
+        .context("refreshing token failed; run `kvidre login`")?;
         self.access_token = tokens.access_token;
         // X rotates refresh tokens: the old one stops working after use.
         self.refresh_token = tokens.refresh_token.or(self.refresh_token.take());
@@ -188,7 +188,7 @@ pub fn login(http: &reqwest::blocking::Client, config: &Config) -> Result<Sessio
 
     let listener = TcpListener::bind(LISTEN_ADDR)
         .with_context(|| format!("could not listen on {LISTEN_ADDR}"))?;
-    eprintln!("Opening browser to authorize tw. If it doesn't open, visit:\n\n  {url}\n");
+    eprintln!("Opening browser to authorize kvidre. If it doesn't open, visit:\n\n  {url}\n");
     let _ = open::that(url.as_str());
 
     let code = wait_for_code(&listener, &state)?;
@@ -257,9 +257,9 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String>
         };
 
         let body = if result.is_ok() {
-            "tw is authorized. You can close this tab."
+            "kvidre is authorized. You can close this tab."
         } else {
-            "tw authorization failed. Check the terminal."
+            "kvidre authorization failed. Check the terminal."
         };
         let _ = write!(
             stream,

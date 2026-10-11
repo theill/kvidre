@@ -1,4 +1,4 @@
-//! Thin client over the handful of X API v2 endpoints tw uses.
+//! Thin client over the handful of X API v2 endpoints kvidre uses.
 
 use crate::auth::{Config, Session};
 use anyhow::{Result, bail};
@@ -12,7 +12,7 @@ const TWEET_FIELDS: &str = "created_at,author_id,note_tweet,referenced_tweets";
 // Pull in reposted originals and their authors so reposts show in full.
 const EXPANSIONS: &str = "author_id,referenced_tweets.id,referenced_tweets.id.author_id";
 
-// Rough pay-per-use prices for the cost estimates tw shows. Check the
+// Rough pay-per-use prices for the cost estimates kvidre shows. Check the
 // X developer console for current rates.
 pub const COST_READ_POST: f64 = 0.005;
 pub const COST_READ_USER: f64 = 0.010;

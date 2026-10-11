@@ -13,7 +13,7 @@ use view::{PostView, post_url};
 
 #[derive(Parser)]
 #[command(
-    name = "tw",
+    name = "kvidre",
     version,
     about = "A tiny X/Twitter CLI. Run without a command to open the TUI."
 )]
