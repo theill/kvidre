@@ -2,6 +2,12 @@
 name = "kvidre"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
+description = "A tiny terminal client (TUI + CLI) for reading and posting on X, using the official API"
+repository = "https://github.com/theill/kvidre"
+readme = "README.md"
+keywords = ["x", "twitter", "tui", "cli"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
