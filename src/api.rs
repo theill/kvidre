@@ -12,6 +12,21 @@ const TWEET_FIELDS: &str = "created_at,author_id,note_tweet,referenced_tweets";
 // Pull in reposted originals and their authors so reposts show in full.
 const EXPANSIONS: &str = "author_id,referenced_tweets.id,referenced_tweets.id.author_id";
 
+// Rough pay-per-use prices for the cost estimates tw shows. Check the
+// X developer console for current rates.
+pub const COST_READ_POST: f64 = 0.005;
+pub const COST_READ_USER: f64 = 0.010;
+const COST_CREATE_POST: f64 = 0.015;
+const COST_CREATE_POST_WITH_URL: f64 = 0.20;
+
+pub fn post_cost(text: &str) -> f64 {
+    if text.contains("http://") || text.contains("https://") {
+        COST_CREATE_POST_WITH_URL
+    } else {
+        COST_CREATE_POST
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Post {
     pub id: String,
@@ -43,7 +58,7 @@ pub struct NoteTweet {
     pub text: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct User {
     pub id: String,
     pub username: String,
@@ -58,15 +73,28 @@ pub struct Includes {
     pub tweets: Vec<Post>,
 }
 
+#[derive(Deserialize, Default)]
+pub struct Meta {
+    /// Pass back as `pagination_token` to fetch the next, older page.
+    pub next_token: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct Page {
     #[serde(default)]
     pub data: Vec<Post>,
     #[serde(default)]
     pub includes: Includes,
+    #[serde(default)]
+    pub meta: Meta,
 }
 
 impl Page {
+    /// Estimated cost of reading this page, counting included originals.
+    pub fn read_cost(&self) -> f64 {
+        (self.data.len() + self.includes.tweets.len()) as f64 * COST_READ_POST
+    }
+
     pub fn user(&self, id: Option<&str>) -> Option<&User> {
         self.includes
             .users
@@ -136,42 +164,45 @@ impl Client {
         Ok(check(resp)?.json()?)
     }
 
-    fn timeline(&mut self, path: &str, count: u32) -> Result<Page> {
+    fn timeline(&mut self, path: &str, count: u32, page: Option<&str>) -> Result<Page> {
         let url = format!("{BASE}{path}");
-        let query = [
+        let mut query = vec![
             ("max_results", count.to_string()),
             ("tweet.fields", TWEET_FIELDS.into()),
             ("expansions", EXPANSIONS.into()),
             ("user.fields", "username,name".into()),
         ];
+        if let Some(token) = page {
+            query.push(("pagination_token", token.into()));
+        }
         self.send(|http| http.get(&url).query(&query))
     }
 
     /// Home timeline, newest first. X accepts 1–100.
-    pub fn home(&mut self, count: u32) -> Result<Page> {
+    pub fn home(&mut self, count: u32, page: Option<&str>) -> Result<Page> {
         let path = format!(
             "/users/{}/timelines/reverse_chronological",
             self.session.user_id
         );
-        self.timeline(&path, count.clamp(1, 100))
+        self.timeline(&path, count.clamp(1, 100), page)
     }
 
     /// Posts mentioning you. X accepts 5–100.
-    pub fn mentions(&mut self, count: u32) -> Result<Page> {
+    pub fn mentions(&mut self, count: u32, page: Option<&str>) -> Result<Page> {
         let path = format!("/users/{}/mentions", self.session.user_id);
-        self.timeline(&path, count.clamp(5, 100))
+        self.timeline(&path, count.clamp(5, 100), page)
+    }
+
+    pub fn lookup_user(&mut self, username: &str) -> Result<User> {
+        let url = format!("{BASE}/users/by/username/{username}");
+        let user: Data<User> = self.send(|http| http.get(&url))?;
+        Ok(user.data)
     }
 
     /// A user's recent posts. X accepts 5–100.
-    pub fn user_posts(&mut self, username: &str, count: u32) -> Result<Page> {
-        let url = format!("{BASE}/users/by/username/{username}");
-        let user: Data<User> = self.send(|http| http.get(&url))?;
-        let mut page = self.timeline(
-            &format!("/users/{}/tweets", user.data.id),
-            count.clamp(5, 100),
-        )?;
-        page.includes.users.push(user.data);
-        Ok(page)
+    pub fn user_posts(&mut self, user_id: &str, count: u32, page: Option<&str>) -> Result<Page> {
+        let path = format!("/users/{user_id}/tweets");
+        self.timeline(&path, count.clamp(5, 100), page)
     }
 
     pub fn post(&mut self, text: &str, reply_to: Option<&str>) -> Result<Created> {

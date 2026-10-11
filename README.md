@@ -1,6 +1,25 @@
 # tw
 
-A tiny X/Twitter CLI for reading and posting a little, using the official X API v2.
+A tiny X/Twitter client for reading and posting a little, using the official X API v2.
+
+## TUI
+
+Run `tw` with no arguments (or `tw tui`) to open the terminal UI. It has Home and Mentions tabs, and you can open tabs for other users.
+
+| Key | Action |
+|---|---|
+| `j`/`k`, `↓`/`↑` | move between posts |
+| `tab`, `1`–`9` | switch feed |
+| `c` / `r` | write a post / reply to the selected post |
+| `o`, `Enter` | open the post in your browser |
+| `d` | delete your own post (asks first) |
+| `u` / `x` | open a user's posts / close their tab |
+| `R` / `m` | reload / load older posts |
+| `?` / `q` | help / quit |
+
+Every read is paid, so a feed only loads when you first open it and when you press `R` or `m`. Nothing refreshes in the background. The status bar shows an estimate of what the session has cost so far.
+
+## CLI
 
 ```
 tw timeline -n 10        # home timeline, newest first   (alias: t)
