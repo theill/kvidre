@@ -100,7 +100,7 @@ Following shows original posts from you and the accounts you follow, newest firs
 
 | Key | Action |
 |---|---|
-| `j` / `k`, `↓` / `↑` | Move between posts |
+| `j` / `k`, `↓` / `↑` | Move between posts. `↓` on the last post loads older posts (paid read). |
 | `g` / `G` | First / last post |
 | `PgDn` / `PgUp` | Jump 5 posts |
 | `tab`, `1`–`9` | Switch tab |
@@ -109,6 +109,7 @@ Following shows original posts from you and the accounts you follow, newest firs
 | `f` | Show or hide replies and reposts in Following (reloads) |
 | `c` | Write a new post. `Enter` sends, `Alt+Enter` adds a new line, `Esc` cancels. |
 | `r` | Reply to the selected post |
+| `Space` | Show all of a long post (posts are cut at 10 lines); press again to collapse |
 | `o`, `Enter` | Open the selected post in your browser |
 | `d` | Delete one of your own posts (asks for confirmation) |
 | `u` / `x` | Open a user's posts in a new tab / close that tab |

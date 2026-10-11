@@ -20,7 +20,9 @@ const PAGE_SIZE: u32 = 10;
 /// Accounts fetched per load of the Follows tab (about $0.01 each).
 const ACCOUNT_PAGE_SIZE: u32 = 100;
 const MAX_POST_CHARS: usize = 280;
-const HINTS: &str = "c post · r reply · o open · R reload · m more · ? help";
+/// Wrapped lines of post text shown in a feed; longer posts end in "…".
+const MAX_POST_LINES: usize = 10;
+const HINTS: &str = "c post · r reply · o open · space expand · R reload · m more · ? help";
 const FOLLOWS_HINTS: &str = "U unfollow · Enter posts · o profile · m more · ? help";
 
 pub fn run() -> Result<()> {
@@ -69,6 +71,8 @@ struct Tab {
     /// Filled instead of `posts` in the Follows tab.
     users: Vec<User>,
     list: ListState,
+    /// ID of the selected post when Space has expanded it past MAX_POST_LINES.
+    expanded: Option<String>,
     next_token: Option<String>,
     loaded: bool,
 }
@@ -80,6 +84,7 @@ impl Tab {
             posts: Vec::new(),
             users: Vec::new(),
             list: ListState::default(),
+            expanded: None,
             next_token: None,
             loaded: false,
         }
@@ -95,6 +100,11 @@ impl Tab {
 
     fn len(&self) -> usize {
         self.posts.len() + self.users.len()
+    }
+
+    /// True when the last item is selected, so moving down should load more.
+    fn at_end(&self) -> bool {
+        self.list.selected().is_some_and(|i| i.saturating_add(1) >= self.len())
     }
 }
 
@@ -293,7 +303,11 @@ impl Ui {
             tab.posts
                 .iter()
                 .enumerate()
-                .map(|(i, post)| post_item(post, &now, width, selected == Some(i)))
+                .map(|(i, post)| {
+                    let selected = selected == Some(i);
+                    let expanded = selected && tab.expanded.as_ref() == Some(&post.id);
+                    post_item(post, &now, width, selected, expanded)
+                })
                 .collect()
         };
         let list = List::new(items).highlight_style(Style::new().yellow());
@@ -321,7 +335,13 @@ impl Ui {
 
 /// One post as a list item. The selection bar is drawn here rather than by the
 /// List, so it covers the post's lines but not the blank line separating posts.
-fn post_item<'a>(post: &PostView, now: &Zoned, width: usize, selected: bool) -> ListItem<'a> {
+fn post_item<'a>(
+    post: &PostView,
+    now: &Zoned,
+    width: usize,
+    selected: bool,
+    expanded: bool,
+) -> ListItem<'a> {
     let bar = if selected {
         Span::from("▌ ").yellow()
     } else {
@@ -340,11 +360,17 @@ fn post_item<'a>(post: &PostView, now: &Zoned, width: usize, selected: bool) -> 
     }
 
     let mut lines = vec![Line::from(header)];
+    let body = textwrap::wrap(&post.text, width);
+    let shown = if expanded { body.len() } else { MAX_POST_LINES };
+    let truncated = body.len() > shown;
     lines.extend(
-        textwrap::wrap(&post.text, width)
-            .into_iter()
+        body.into_iter()
+            .take(shown)
             .map(|line| Line::from(vec![bar.clone(), Span::from(line.into_owned())])),
     );
+    if truncated && let Some(last) = lines.last_mut() {
+        last.push_span(Span::from(" …").dim());
+    }
     lines.push(Line::default());
     ListItem::new(lines)
 }
@@ -463,17 +489,18 @@ fn render_confirm(frame: &mut Frame, title: &str, question: &str) {
 }
 
 fn render_help(frame: &mut Frame) {
-    const KEYS: [(&str, &str); 17] = [
+    const KEYS: [(&str, &str); 18] = [
         ("j / k  ↓ / ↑", "move between posts"),
         ("g / G", "first / last post"),
         ("PgDn / PgUp", "jump 5 posts"),
         ("tab / 1-9", "switch feed"),
         ("R", "reload feed (paid read)"),
-        ("m", "load older posts (paid read)"),
+        ("m  (↓ at end)", "load older posts (paid read)"),
         ("f", "Following: show/hide replies & reposts"),
         ("c", "write a new post"),
         ("r", "reply to selected post"),
         ("o / Enter", "open post in browser"),
+        ("space", "expand / collapse a long post"),
         ("d", "delete your own post"),
         ("u", "open a user's posts"),
         ("F", "accounts you follow (≈$0.01 each)"),
@@ -619,8 +646,12 @@ impl App {
     fn on_browse_key(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         self.ui.status.clear();
         let tabs = self.ui.tabs.len();
+        let before = self.ui.tab().selected().map(|post| post.id.clone());
         match key.code {
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('j') | KeyCode::Down if self.ui.tab().at_end() => {
+                self.load(terminal, true)?
+            }
             KeyCode::Char('j') | KeyCode::Down => self.ui.tab_mut().list.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.ui.tab_mut().list.select_previous(),
             KeyCode::Char('g') | KeyCode::Home => self.ui.tab_mut().list.select_first(),
@@ -656,6 +687,11 @@ impl App {
                 }
                 None => self.ui.status = "No post selected.".into(),
             },
+            KeyCode::Char(' ') => {
+                let tab = self.ui.tab_mut();
+                let id = tab.selected().map(|post| post.id.clone());
+                tab.expanded = if tab.expanded == id { None } else { id };
+            }
             KeyCode::Char('o') | KeyCode::Enter => {
                 if let Some(user) = self.ui.tab().selected_user().cloned() {
                     // In Follows, Enter reads their posts here; o opens their profile.
@@ -711,6 +747,11 @@ impl App {
             },
             KeyCode::Char('?') => self.ui.mode = Mode::Help,
             _ => {}
+        }
+        // Moving to another post collapses the expanded one.
+        let tab = self.ui.tab_mut();
+        if tab.selected().map(|post| &post.id) != before.as_ref() {
+            tab.expanded = None;
         }
         Ok(())
     }
@@ -965,6 +1006,39 @@ mod tests {
         assert!(screen.contains("deleted original & more"));
         assert!(screen.contains("Loaded 2 posts (≈$0.015)"));
         assert!(screen.contains("≈$0.015 this session"));
+    }
+
+    #[test]
+    fn long_posts_are_cut_to_ten_lines_until_expanded() {
+        let mut ui = loaded_ui();
+        let text = (1..=15)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        ui.tab_mut().posts[0].text = text;
+        let cut = screen(&mut ui, 80, 30);
+        assert!(cut.contains("▌ line 10 …"));
+        assert!(!cut.contains("line 11"));
+        assert!(cut.contains("@yoda"), "next post still follows");
+
+        ui.tab_mut().expanded = Some(ui.tab().posts[0].id.clone());
+        let full = screen(&mut ui, 80, 30);
+        assert!(full.contains("▌ line 15"));
+        assert!(!full.contains("line 10 …"));
+    }
+
+    #[test]
+    fn at_end_only_on_last_item() {
+        let mut ui = loaded_ui();
+        assert!(!ui.tab().at_end());
+        ui.tab_mut().list.select_last();
+        assert!(
+            ui.tab().at_end(),
+            "select_last parks past the end until render"
+        );
+        ui.tab_mut().list.select(Some(1));
+        assert!(ui.tab().at_end());
+        assert!(!Tab::new(Feed::Mentions).at_end(), "empty tab");
     }
 
     #[test]
