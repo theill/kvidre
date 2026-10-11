@@ -19,7 +19,7 @@ const ME_URL: &str = "https://api.x.com/2/users/me";
 // X requires 127.0.0.1 rather than localhost for local callbacks.
 pub const REDIRECT_URI: &str = "http://127.0.0.1:8723/callback";
 const LISTEN_ADDR: &str = "127.0.0.1:8723";
-const SCOPES: &str = "tweet.read tweet.write users.read offline.access";
+const SCOPES: &str = "tweet.read tweet.write users.read follows.read follows.write offline.access";
 
 /// App credentials from the X developer console (~/.config/kvidre/config.json).
 #[derive(Serialize, Deserialize)]
@@ -38,6 +38,10 @@ pub struct Session {
     pub expires_at: u64,
     pub user_id: String,
     pub username: String,
+    /// Space-separated scopes X granted. Missing in sessions saved before
+    /// kvidre recorded it, which then count as having no optional scopes.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +49,7 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: u64,
+    scope: Option<String>,
 }
 
 fn config_dir() -> Result<PathBuf> {
@@ -105,6 +110,19 @@ impl Session {
         now() + 60 >= self.expires_at
     }
 
+    /// Fails with a re-login hint if the session wasn't granted `scope`,
+    /// e.g. because it predates kvidre asking for it.
+    pub fn require_scope(&self, scope: &str) -> Result<()> {
+        let granted = self
+            .scope
+            .as_deref()
+            .is_some_and(|s| s.split_whitespace().any(|g| g == scope));
+        if !granted {
+            bail!("kvidre needs the `{scope}` permission. Quit and run `kvidre login` again.");
+        }
+        Ok(())
+    }
+
     /// Exchanges the refresh token for a new access token and persists it.
     pub fn refresh(&mut self, http: &reqwest::blocking::Client, config: &Config) -> Result<()> {
         let refresh_token = self
@@ -124,6 +142,7 @@ impl Session {
         // X rotates refresh tokens: the old one stops working after use.
         self.refresh_token = tokens.refresh_token.or(self.refresh_token.take());
         self.expires_at = now() + tokens.expires_in;
+        self.scope = tokens.scope.or(self.scope.take());
         self.save()
     }
 }
@@ -223,6 +242,7 @@ pub fn login(http: &reqwest::blocking::Client, config: &Config) -> Result<Sessio
         expires_at: now() + tokens.expires_in,
         user_id: me.data.id,
         username: me.data.username,
+        scope: tokens.scope,
     };
     session.save()?;
     Ok(session)
@@ -275,6 +295,26 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String>
 mod tests {
     use super::*;
     use std::net::TcpStream;
+
+    #[test]
+    fn require_scope_checks_granted_scopes() {
+        // Sessions saved before kvidre recorded scopes have no `scope` field.
+        let old: Session = serde_json::from_str(
+            r#"{"access_token":"a","refresh_token":null,"expires_at":0,"user_id":"1","username":"me"}"#,
+        )
+        .unwrap();
+        let error = old.require_scope("follows.read").unwrap_err().to_string();
+        assert!(error.contains("kvidre login"));
+
+        let new = Session {
+            scope: Some("tweet.read follows.read offline.access".into()),
+            ..old
+        };
+        assert!(new.require_scope("follows.read").is_ok());
+        assert!(new.require_scope("follows.write").is_err());
+        // Must match whole scope names, not substrings.
+        assert!(new.require_scope("follows").is_err());
+    }
 
     #[test]
     fn pkce_challenge_matches_rfc7636_example() {

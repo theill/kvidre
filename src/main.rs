@@ -4,7 +4,7 @@ mod tui;
 mod view;
 
 use anyhow::{Result, bail};
-use api::{Client, Page};
+use api::{Client, Page, UserPage};
 use auth::{Config, Session};
 use clap::{Parser, Subcommand};
 use jiff::Zoned;
@@ -69,6 +69,14 @@ enum Command {
     Reply { post: String, text: Vec<String> },
     /// Delete one of your posts by ID or URL
     Delete { post: String },
+    /// List accounts you follow, most recently followed first
+    Follows {
+        /// Each account is a paid read (about $0.01), up to 1000
+        #[arg(short = 'n', long, default_value_t = 100)]
+        count: u32,
+    },
+    /// Stop following an account
+    Unfollow { username: String },
 }
 
 fn main() -> Result<()> {
@@ -123,8 +131,45 @@ fn main() -> Result<()> {
             Client::load()?.delete(&post_id(&post)?)?;
             println!("Deleted");
         }
+        Command::Follows { count } => print_users(&Client::load()?.followed_accounts(count, None)?),
+        Command::Unfollow { username } => {
+            let mut client = Client::load()?;
+            let user = client.lookup_user(username.trim_start_matches('@'))?;
+            client.unfollow(&user.id)?;
+            println!("Unfollowed @{}", user.username);
+        }
     }
     Ok(())
+}
+
+fn print_users(page: &UserPage) {
+    let style = if std::io::stdout().is_terminal() {
+        Style::COLOR
+    } else {
+        Style::PLAIN
+    };
+    let Style { bold, dim, reset } = style;
+    if page.data.is_empty() {
+        println!("You don't follow anyone.");
+    }
+    for user in &page.data {
+        let bio = user.description.as_deref().unwrap_or_default();
+        let bio = bio.lines().next().unwrap_or_default();
+        println!(
+            "{bold}@{}{reset} {}  {dim}{bio}{reset}",
+            user.username, user.name
+        );
+    }
+    let more = if page.meta.next_token.is_some() {
+        " (more available, raise -n)"
+    } else {
+        ""
+    };
+    eprintln!(
+        "{dim}{} accounts{more}, about ${:.3}{reset}",
+        page.data.len(),
+        page.read_cost()
+    );
 }
 
 fn text_or_stdin(words: Vec<String>) -> Result<String> {

@@ -58,11 +58,30 @@ pub struct NoteTweet {
     pub text: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct User {
     pub id: String,
     pub username: String,
     pub name: String,
+    /// Profile bio; only requested when listing accounts.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// A page of accounts, e.g. the ones you follow.
+#[derive(Deserialize)]
+pub struct UserPage {
+    #[serde(default)]
+    pub data: Vec<User>,
+    #[serde(default)]
+    pub meta: Meta,
+}
+
+impl UserPage {
+    /// Estimated cost, assuming each returned account is billed as a user read.
+    pub fn read_cost(&self) -> f64 {
+        self.data.len() as f64 * COST_READ_USER
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -219,6 +238,27 @@ impl Client {
     pub fn user_posts(&mut self, user_id: &str, count: u32, page: Option<&str>) -> Result<Page> {
         let path = format!("/users/{user_id}/tweets");
         self.timeline(&path, count.clamp(5, 100), page, None)
+    }
+
+    /// Accounts you follow, most recently followed first. X accepts 1–1000.
+    pub fn followed_accounts(&mut self, count: u32, page: Option<&str>) -> Result<UserPage> {
+        self.session.require_scope("follows.read")?;
+        let url = format!("{BASE}/users/{}/following", self.session.user_id);
+        let mut query = vec![
+            ("max_results", count.clamp(1, 1000).to_string()),
+            ("user.fields", "username,name,description".into()),
+        ];
+        if let Some(token) = page {
+            query.push(("pagination_token", token.into()));
+        }
+        self.send(|http| http.get(&url).query(&query))
+    }
+
+    pub fn unfollow(&mut self, user_id: &str) -> Result<()> {
+        self.session.require_scope("follows.write")?;
+        let url = format!("{BASE}/users/{}/following/{user_id}", self.session.user_id);
+        let _: serde_json::Value = self.send(|http| http.delete(&url))?;
+        Ok(())
     }
 
     pub fn post(&mut self, text: &str, reply_to: Option<&str>) -> Result<Created> {

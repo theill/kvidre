@@ -3,7 +3,7 @@
 //! Every API call costs credits, so nothing loads in the background: a feed
 //! loads when first opened, and again only when asked (R reload, m more).
 
-use crate::api::{self, Client, Page};
+use crate::api::{self, Client, Page, User, UserPage};
 use crate::view::PostView;
 use anyhow::{Result, bail};
 use jiff::{Timestamp, Zoned};
@@ -17,8 +17,11 @@ use std::process::Stdio;
 
 /// Posts fetched per load. Each one is a paid read, so keep it modest.
 const PAGE_SIZE: u32 = 10;
+/// Accounts fetched per load of the Follows tab (about $0.01 each).
+const ACCOUNT_PAGE_SIZE: u32 = 100;
 const MAX_POST_CHARS: usize = 280;
 const HINTS: &str = "c post · r reply · o open · R reload · m more · ? help";
+const FOLLOWS_HINTS: &str = "U unfollow · Enter posts · o profile · m more · ? help";
 
 pub fn run() -> Result<()> {
     // Load credentials before taking over the terminal so errors print normally.
@@ -40,11 +43,14 @@ enum Feed {
         id: String,
         username: String,
     },
+    /// The accounts you follow (a list of people, not posts).
+    Follows,
 }
 
 impl Feed {
     fn title(&self) -> String {
         match self {
+            Feed::Follows => "Follows".into(),
             Feed::Following {
                 originals_only: true,
             } => "Following".into(),
@@ -60,6 +66,8 @@ impl Feed {
 struct Tab {
     feed: Feed,
     posts: Vec<PostView>,
+    /// Filled instead of `posts` in the Follows tab.
+    users: Vec<User>,
     list: ListState,
     next_token: Option<String>,
     loaded: bool,
@@ -70,6 +78,7 @@ impl Tab {
         Self {
             feed,
             posts: Vec::new(),
+            users: Vec::new(),
             list: ListState::default(),
             next_token: None,
             loaded: false,
@@ -78,6 +87,30 @@ impl Tab {
 
     fn selected(&self) -> Option<&PostView> {
         self.list.selected().and_then(|i| self.posts.get(i))
+    }
+
+    fn selected_user(&self) -> Option<&User> {
+        self.list.selected().and_then(|i| self.users.get(i))
+    }
+
+    fn len(&self) -> usize {
+        self.posts.len() + self.users.len()
+    }
+}
+
+/// Replaces `items` with a fresh first page, or appends an older page and
+/// selects its first item.
+fn merge<T>(items: &mut Vec<T>, list: &mut ListState, new: Vec<T>, more: bool) {
+    let count = new.len();
+    if more {
+        let first_new = items.len();
+        items.extend(new);
+        if count > 0 {
+            list.select(Some(first_new));
+        }
+    } else {
+        *items = new;
+        list.select((count > 0).then_some(0));
     }
 }
 
@@ -91,6 +124,7 @@ enum Mode {
         text: String,
     },
     ConfirmDelete,
+    ConfirmUnfollow,
     Help,
 }
 
@@ -146,20 +180,24 @@ impl Ui {
         let views = PostView::all(&page);
         let count = views.len();
         let tab = self.tab_mut();
-        if more {
-            // Jump to the first newly loaded post.
-            let first_new = tab.posts.len();
-            tab.posts.extend(views);
-            if count > 0 {
-                tab.list.select(Some(first_new));
-            }
-        } else {
-            tab.posts = views;
-            tab.list.select((count > 0).then_some(0));
-        }
+        merge(&mut tab.posts, &mut tab.list, views, more);
         tab.next_token = page.meta.next_token;
         tab.loaded = true;
         self.status = format!("Loaded {count} posts (≈${cost:.3})");
+    }
+
+    fn add_users(&mut self, page: UserPage, more: bool) {
+        let cost = page.read_cost();
+        self.spent += cost;
+        let count = page.data.len();
+        let tab = self.tab_mut();
+        merge(&mut tab.users, &mut tab.list, page.data, more);
+        let has_more = page.meta.next_token.is_some();
+        tab.next_token = page.meta.next_token;
+        tab.loaded = true;
+        let total = tab.users.len();
+        let more_hint = if has_more { ", m for more" } else { "" };
+        self.status = format!("{total} accounts loaded (+{count}, ≈${cost:.2}){more_hint}");
     }
 
     fn render(&mut self, frame: &mut Frame) {
@@ -179,7 +217,14 @@ impl Ui {
             Mode::Browse => {}
             Mode::Compose { reply_to, text } => render_compose(frame, reply_to.as_ref(), text),
             Mode::FindUser { text } => render_find_user(frame, text),
-            Mode::ConfirmDelete => render_confirm_delete(frame),
+            Mode::ConfirmDelete => render_confirm(frame, " Delete post ", "Delete this post?"),
+            Mode::ConfirmUnfollow => {
+                let who = self
+                    .tab()
+                    .selected_user()
+                    .map_or(String::new(), |u| format!(" @{}", u.username));
+                render_confirm(frame, " Unfollow ", &format!("Unfollow{who}?"))
+            }
             Mode::Help => render_help(frame),
         }
     }
@@ -218,11 +263,11 @@ impl Ui {
 
     fn render_posts(&mut self, frame: &mut Frame, area: Rect) {
         let tab = &self.tabs[self.active];
-        if tab.posts.is_empty() {
-            let message = if tab.loaded {
-                "No posts."
-            } else {
-                "Not loaded yet. Press R to load."
+        if tab.len() == 0 {
+            let message = match (tab.loaded, &tab.feed) {
+                (false, _) => "Not loaded yet. Press R to load.",
+                (true, Feed::Follows) => "You don't follow anyone.",
+                (true, _) => "No posts.",
             };
             let area = Rect {
                 y: area.y + area.height / 2,
@@ -237,13 +282,20 @@ impl Ui {
         let width = (area.width as usize).saturating_sub(3).max(10);
         let now = Zoned::now();
         // The list may hold an out-of-range index (e.g. after G) until it renders.
-        let selected = tab.list.selected().map(|i| i.min(tab.posts.len() - 1));
-        let items: Vec<ListItem> = tab
-            .posts
-            .iter()
-            .enumerate()
-            .map(|(i, post)| post_item(post, &now, width, selected == Some(i)))
-            .collect();
+        let selected = tab.list.selected().map(|i| i.min(tab.len() - 1));
+        let items: Vec<ListItem> = if matches!(tab.feed, Feed::Follows) {
+            tab.users
+                .iter()
+                .enumerate()
+                .map(|(i, user)| user_item(user, width, selected == Some(i)))
+                .collect()
+        } else {
+            tab.posts
+                .iter()
+                .enumerate()
+                .map(|(i, post)| post_item(post, &now, width, selected == Some(i)))
+                .collect()
+        };
         let list = List::new(items).highlight_style(Style::new().yellow());
         frame.render_stateful_widget(list, area, &mut self.tabs[self.active].list);
     }
@@ -254,7 +306,11 @@ impl Ui {
             Layout::horizontal([Constraint::Min(0), Constraint::Length(spent.len() as u16)])
                 .areas(area);
         let status = if self.status.is_empty() {
-            Line::from(HINTS).dim()
+            let hints = match self.tab().feed {
+                Feed::Follows => FOLLOWS_HINTS,
+                _ => HINTS,
+            };
+            Line::from(hints).dim()
         } else {
             Line::from(self.status.as_str())
         };
@@ -288,6 +344,37 @@ fn post_item<'a>(post: &PostView, now: &Zoned, width: usize, selected: bool) -> 
         textwrap::wrap(&post.text, width)
             .into_iter()
             .map(|line| Line::from(vec![bar.clone(), Span::from(line.into_owned())])),
+    );
+    lines.push(Line::default());
+    ListItem::new(lines)
+}
+
+/// One followed account: handle and name, then up to two lines of bio.
+fn user_item<'a>(user: &User, width: usize, selected: bool) -> ListItem<'a> {
+    let bar = if selected {
+        Span::from("▌ ").yellow()
+    } else {
+        Span::from("  ")
+    };
+    let mut lines = vec![Line::from(vec![
+        bar.clone(),
+        Span::from(format!("@{}", user.username)).bold().cyan(),
+        Span::from(format!(" {}", user.name)),
+    ])];
+    // Flatten line breaks so more of the bio fits in two lines.
+    let bio = user
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    lines.extend(
+        textwrap::wrap(&bio, width)
+            .into_iter()
+            .filter(|line| !line.is_empty())
+            .take(2)
+            .map(|line| Line::from(vec![bar.clone(), Span::from(line.into_owned()).dim()])),
     );
     lines.push(Line::default());
     ListItem::new(lines)
@@ -362,11 +449,12 @@ fn render_find_user(frame: &mut Frame, text: &str) {
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
-fn render_confirm_delete(frame: &mut Frame) {
-    let area = popup(frame, 36, 3);
-    let block = Block::bordered().title(" Delete post ".bold());
+fn render_confirm(frame: &mut Frame, title: &str, question: &str) {
+    let width = (question.chars().count() as u16 + 10).max(36);
+    let area = popup(frame, width, 3);
+    let block = Block::bordered().title(title.to_string().bold());
     let line = Line::from(vec![
-        Span::from("Delete this post? "),
+        Span::from(format!("{question} ")),
         Span::from("y").bold().red(),
         Span::from("/n"),
     ])
@@ -375,7 +463,7 @@ fn render_confirm_delete(frame: &mut Frame) {
 }
 
 fn render_help(frame: &mut Frame) {
-    const KEYS: [(&str, &str); 15] = [
+    const KEYS: [(&str, &str); 17] = [
         ("j / k  ↓ / ↑", "move between posts"),
         ("g / G", "first / last post"),
         ("PgDn / PgUp", "jump 5 posts"),
@@ -388,7 +476,9 @@ fn render_help(frame: &mut Frame) {
         ("o / Enter", "open post in browser"),
         ("d", "delete your own post"),
         ("u", "open a user's posts"),
-        ("x", "close user tab"),
+        ("F", "accounts you follow (≈$0.01 each)"),
+        ("U", "Follows: unfollow selected account"),
+        ("x", "close user or Follows tab"),
         ("?", "toggle this help"),
         ("q / Ctrl+C", "quit"),
     ];
@@ -478,6 +568,13 @@ impl App {
                     self.ui.status = "Kept.".into();
                 }
             }
+            Mode::ConfirmUnfollow => {
+                if key.code == KeyCode::Char('y') {
+                    self.unfollow_selected(terminal)?;
+                } else {
+                    self.ui.status = "Still following.".into();
+                }
+            }
             Mode::Compose { reply_to, mut text } => match key.code {
                 KeyCode::Esc => self.ui.status = "Discarded.".into(),
                 KeyCode::Enter
@@ -560,11 +657,30 @@ impl App {
                 None => self.ui.status = "No post selected.".into(),
             },
             KeyCode::Char('o') | KeyCode::Enter => {
-                if let Some(url) = self.ui.tab().selected().map(PostView::url) {
-                    match open_in_browser(&url) {
-                        Ok(()) => self.ui.status = format!("Opened {url}"),
-                        Err(e) => self.ui.error(e),
+                if let Some(user) = self.ui.tab().selected_user().cloned() {
+                    // In Follows, Enter reads their posts here; o opens their profile.
+                    if key.code == KeyCode::Enter {
+                        self.open_user_tab(terminal, user.id, user.username)?;
+                    } else {
+                        self.open_url(&format!("https://x.com/{}", user.username));
                     }
+                } else if let Some(url) = self.ui.tab().selected().map(PostView::url) {
+                    self.open_url(&url);
+                }
+            }
+            KeyCode::Char('F') => {
+                let existing = self.ui.tabs.iter().position(|t| t.feed == Feed::Follows);
+                let index = existing.unwrap_or_else(|| {
+                    self.ui.tabs.push(Tab::new(Feed::Follows));
+                    self.ui.tabs.len() - 1
+                });
+                self.switch_tab(terminal, index)?;
+            }
+            KeyCode::Char('U') => {
+                if self.ui.tab().selected_user().is_some() {
+                    self.ui.mode = Mode::ConfirmUnfollow;
+                } else {
+                    self.ui.status = "Press F to list who you follow, then U to unfollow.".into();
                 }
             }
             KeyCode::Char('d') => match self.ui.tab().selected() {
@@ -578,7 +694,7 @@ impl App {
                 }
             }
             KeyCode::Char('x') => {
-                if matches!(self.ui.tab().feed, Feed::User { .. }) {
+                if matches!(self.ui.tab().feed, Feed::User { .. } | Feed::Follows) {
                     self.ui.tabs.remove(self.ui.active);
                     self.ui.active -= 1;
                 }
@@ -615,7 +731,7 @@ impl App {
             (false, _) => None,
             (true, Some(token)) => Some(token),
             (true, None) => {
-                self.ui.status = "No older posts.".into();
+                self.ui.status = "Nothing more to load.".into();
                 return Ok(());
             }
         };
@@ -623,17 +739,34 @@ impl App {
         self.busy(terminal, &format!("Loading {}…", feed.title()))?;
         let token = token.as_deref();
         let result = match &feed {
-            Feed::Following { originals_only } => {
-                self.client.following(PAGE_SIZE, token, *originals_only)
-            }
-            Feed::Mentions => self.client.mentions(PAGE_SIZE, token),
-            Feed::User { id, .. } => self.client.user_posts(id, PAGE_SIZE, token),
+            Feed::Following { originals_only } => self
+                .client
+                .following(PAGE_SIZE, token, *originals_only)
+                .map(|page| self.ui.add_page(page, more)),
+            Feed::Mentions => self
+                .client
+                .mentions(PAGE_SIZE, token)
+                .map(|page| self.ui.add_page(page, more)),
+            Feed::User { id, .. } => self
+                .client
+                .user_posts(id, PAGE_SIZE, token)
+                .map(|page| self.ui.add_page(page, more)),
+            Feed::Follows => self
+                .client
+                .followed_accounts(ACCOUNT_PAGE_SIZE, token)
+                .map(|page| self.ui.add_users(page, more)),
         };
-        match result {
-            Ok(page) => self.ui.add_page(page, more),
-            Err(e) => self.ui.error(e),
+        if let Err(e) = result {
+            self.ui.error(e);
         }
         Ok(())
+    }
+
+    fn open_url(&mut self, url: &str) {
+        match open_in_browser(url) {
+            Ok(()) => self.ui.status = format!("Opened {url}"),
+            Err(e) => self.ui.error(e),
+        }
     }
 
     fn send_post(
@@ -712,6 +845,49 @@ impl App {
         Ok(())
     }
 
+    fn unfollow_selected(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let tab = self.ui.tab();
+        let Some((index, user)) = tab
+            .list
+            .selected()
+            .and_then(|i| tab.users.get(i).map(|user| (i, user.clone())))
+        else {
+            return Ok(());
+        };
+
+        self.busy(terminal, &format!("Unfollowing @{}…", user.username))?;
+        match self.client.unfollow(&user.id) {
+            Ok(()) => {
+                let tab = self.ui.tab_mut();
+                tab.users.remove(index);
+                let last = tab.users.len().checked_sub(1);
+                tab.list.select(last.map(|last| index.min(last)));
+                self.ui.status = format!("Unfollowed @{}.", user.username);
+            }
+            Err(e) => self.ui.error(e),
+        }
+        Ok(())
+    }
+
+    /// Switches to the posts tab for a known account, opening one if needed.
+    fn open_user_tab(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        id: String,
+        username: String,
+    ) -> Result<()> {
+        let existing = self
+            .ui
+            .tabs
+            .iter()
+            .position(|tab| matches!(&tab.feed, Feed::User { id: i, .. } if *i == id));
+        let index = existing.unwrap_or_else(|| {
+            self.ui.tabs.push(Tab::new(Feed::User { id, username }));
+            self.ui.tabs.len() - 1
+        });
+        self.switch_tab(terminal, index)
+    }
+
     fn open_user(&mut self, terminal: &mut DefaultTerminal, text: &str) -> Result<()> {
         let username = text.trim().trim_start_matches('@');
         if username.is_empty() {
@@ -728,11 +904,7 @@ impl App {
         match self.client.lookup_user(username) {
             Ok(user) => {
                 self.ui.spent += api::COST_READ_USER;
-                self.ui.tabs.push(Tab::new(Feed::User {
-                    id: user.id,
-                    username: user.username,
-                }));
-                self.switch_tab(terminal, self.ui.tabs.len() - 1)?;
+                self.open_user_tab(terminal, user.id, user.username)?;
             }
             Err(e) => self.ui.error(e),
         }
@@ -843,6 +1015,62 @@ mod tests {
             originals_only: false,
         };
         assert!(screen(&mut ui, 80, 6).contains("1 Following (all) │ 2 Mentions"));
+    }
+
+    fn follows_ui() -> Ui {
+        let mut ui = loaded_ui();
+        ui.tabs.push(Tab::new(Feed::Follows));
+        ui.active = 2;
+        let page: UserPage = serde_json::from_str(
+            r#"{"data": [
+                {"id": "20", "username": "yunta", "name": "Yunta",
+                 "description": "Building robots.\nOpinions my own."},
+                {"id": "30", "username": "quiet", "name": "Quiet One"}
+            ], "meta": {"next_token": "p2"}}"#,
+        )
+        .unwrap();
+        ui.add_users(page, false);
+        ui
+    }
+
+    #[test]
+    fn follows_tab_lists_accounts_with_bios() {
+        let mut ui = follows_ui();
+        let screen = screen(&mut ui, 80, 14);
+        println!("{screen}");
+        let rows: Vec<&str> = screen.lines().collect();
+        assert!(rows[0].contains("3 Follows"));
+        assert!(rows[2].starts_with("▌ @yunta Yunta"));
+        assert!(rows[3].starts_with("▌ Building robots. Opinions my own."));
+        assert_eq!(rows[4], "");
+        assert!(rows[5].starts_with("  @quiet Quiet One"));
+        assert_eq!(rows[6], "", "no bio line for accounts without one");
+        assert!(screen.contains("2 accounts loaded (+2, ≈$0.02), m for more"));
+        assert!(
+            !ui.tab().selected().is_some(),
+            "no post is selected in Follows"
+        );
+    }
+
+    #[test]
+    fn follows_tab_shows_its_own_hints_and_unfollow_prompt() {
+        let mut ui = follows_ui();
+        ui.status.clear();
+        assert!(screen(&mut ui, 80, 14).contains("U unfollow · Enter posts · o profile"));
+        ui.mode = Mode::ConfirmUnfollow;
+        assert!(screen(&mut ui, 80, 14).contains("Unfollow @yunta? y/n"));
+    }
+
+    #[test]
+    fn loading_more_accounts_appends() {
+        let mut ui = follows_ui();
+        let page: UserPage =
+            serde_json::from_str(r#"{"data": [{"id": "40", "username": "late", "name": "Late"}]}"#)
+                .unwrap();
+        ui.add_users(page, true);
+        assert_eq!(ui.tab().users.len(), 3);
+        assert_eq!(ui.tab().selected_user().unwrap().username, "late");
+        assert_eq!(ui.tab().next_token, None);
     }
 
     #[test]

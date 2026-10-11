@@ -22,6 +22,7 @@ c post · r reply · o open · R reload · m more · ? help     ≈$0.050 this s
 - **A calm Following feed.** By default you see only original posts from people you follow, newest first, with no algorithm, replies or reposts. Press `f` to bring replies and reposts back.
 - **TUI** with Following, Mentions and per-user tabs. Reposts show the full original post, long posts aren't cut off, and times are in your local time zone.
 - **Compose, reply, open in browser and delete** your own posts without leaving the terminal.
+- **Tidy who you follow.** List the accounts you follow with their bios and unfollow them in a keystroke.
 - **Scriptable CLI.** For example `kvidre post "hello"`, `echo "text" | kvidre post`, or `kvidre timeline -n 5`.
 - **Keeps API costs down.** Nothing loads in the background, and you see a running estimate of what the session has cost.
 - **Uses your own credentials.** Tokens stay on your machine in a file only you can read. `kvidre` talks to X and nothing else.
@@ -38,6 +39,7 @@ For light personal use the cost is small. X's rates are roughly:
 | Publish a post or reply | $0.015 |
 | Publish a post containing a link | $0.20 |
 | Open a user's tab | $0.01 for the profile lookup, plus the posts it loads |
+| List 100 accounts you follow | About $1 (unconfirmed: assumes $0.01 per account) |
 
 These rates come from third-party reports. X sets and changes its own prices, so **check the current rates in the [X developer console](https://console.x.com)** before relying on these numbers.
 
@@ -86,6 +88,8 @@ kvidre login --client-id YOUR_CLIENT_ID
 
 Your browser opens X's authorization page. Click **Authorize**, and the terminal prints `Logged in as @you`. You only do this once: `kvidre` saves your client ID and renews your login automatically.
 
+> **Upgrading from an earlier version?** Listing and unfollowing accounts needs two extra permissions (`follows.read` and `follows.write`). Run `kvidre login` once more to grant them. Until then, `F` and `kvidre follows` tell you to do this.
+
 > **Logging in on a remote machine over SSH?** The browser has to reach port 8723 on the machine running `kvidre`. Connect with `ssh -L 8723:127.0.0.1:8723 yourserver`, run `kvidre login`, and open the printed URL in your local browser.
 
 ## Using the TUI
@@ -108,6 +112,8 @@ Following shows original posts from you and the accounts you follow, newest firs
 | `o`, `Enter` | Open the selected post in your browser |
 | `d` | Delete one of your own posts (asks for confirmation) |
 | `u` / `x` | Open a user's posts in a new tab / close that tab |
+| `F` | List the accounts you follow (100 at a time, `m` for more) |
+| `U` | In Follows: unfollow the selected account (asks first) |
 | `?` | Show all keys |
 | `q`, `Ctrl+C` | Quit |
 
@@ -126,6 +132,8 @@ kvidre post "hello world"    # publish a post                     (alias: p)
 echo "from a script" | kvidre post
 kvidre reply https://x.com/robin/status/123 "nice!"               (alias: r)
 kvidre delete https://x.com/you/status/456
+kvidre follows -n 200         # accounts you follow, newest follows first
+kvidre unfollow @someone
 kvidre whoami
 kvidre logout
 ```
