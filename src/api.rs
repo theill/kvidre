@@ -2,7 +2,7 @@
 
 use crate::auth::{Config, Session};
 use anyhow::{Result, bail};
-use reqwest::blocking::{Client as Http, RequestBuilder};
+use reqwest::blocking::{Client as Http, RequestBuilder, Response};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -56,6 +56,23 @@ pub struct Created {
     pub id: String,
 }
 
+/// Turns a non-2xx response into an error that includes X's explanation.
+pub fn check(resp: Response) -> Result<Response> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body = resp.text().unwrap_or_default();
+    match status.as_u16() {
+        402 => bail!("X API: out of credits (402). Top up in the developer console.\n{body}"),
+        403 => bail!(
+            "X API: forbidden (403). Check the app has credits and Read and write permission in the developer console.\n{body}"
+        ),
+        429 => bail!("X API: rate limited (429). Try again later.\n{body}"),
+        _ => bail!("X API returned {status}\n{body}"),
+    }
+}
+
 pub struct Client {
     http: Http,
     config: Config,
@@ -78,18 +95,7 @@ impl Client {
         let resp = build(&self.http)
             .bearer_auth(&self.session.access_token)
             .send()?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().unwrap_or_default();
-            match status.as_u16() {
-                402 => {
-                    bail!("X API: out of credits (402). Top up in the developer console.\n{body}")
-                }
-                429 => bail!("X API: rate limited (429). Try again later.\n{body}"),
-                _ => bail!("X API returned {status}\n{body}"),
-            }
-        }
-        Ok(resp.json()?)
+        Ok(check(resp)?.json()?)
     }
 
     fn timeline(&mut self, path: &str, count: u32) -> Result<Page> {

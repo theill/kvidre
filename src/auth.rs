@@ -212,11 +212,9 @@ pub fn login(http: &reqwest::blocking::Client, config: &Config) -> Result<Sessio
         id: String,
         username: String,
     }
-    let me: Me = http
-        .get(ME_URL)
-        .bearer_auth(&tokens.access_token)
-        .send()?
-        .error_for_status()?
+    let resp = http.get(ME_URL).bearer_auth(&tokens.access_token).send()?;
+    let me: Me = crate::api::check(resp)
+        .context("authorized, but looking up your account failed")?
         .json()?;
 
     let session = Session {
