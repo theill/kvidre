@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use jiff::{Timestamp, Zoned};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Style, Stylize};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Tabs, Wrap,
@@ -149,7 +149,9 @@ impl Ui {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        let [header, body, footer] = Layout::vertical([
+        // Heading row, a blank line of breathing room, the posts, the status bar.
+        let [header, _, body, footer] = Layout::vertical([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
@@ -169,10 +171,23 @@ impl Ui {
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect) {
+        // Name badge, styled like sladder's: theme cyan behind bold black.
+        const BADGE: &str = " kvidre ";
         let me = format!("@{} ", self.me);
-        let [tabs_area, me_area] =
-            Layout::horizontal([Constraint::Min(0), Constraint::Length(me.len() as u16)])
-                .areas(area);
+        let [badge_area, tabs_area, me_area] = Layout::horizontal([
+            Constraint::Length(BADGE.len() as u16 + 1),
+            Constraint::Min(0),
+            Constraint::Length(me.len() as u16),
+        ])
+        .areas(area);
+        frame.render_widget(
+            Line::from(vec![
+                Span::styled(BADGE, Style::new().bold().fg(Color::Black).bg(Color::Cyan)),
+                // Tabs pad their titles with a space, so one more makes a two-space gap.
+                Span::raw(" "),
+            ]),
+            badge_area,
+        );
         let titles = self
             .tabs
             .iter()
@@ -180,7 +195,8 @@ impl Ui {
             .map(|(i, tab)| format!("{} {}", i + 1, tab.feed.title()));
         let tabs = Tabs::new(titles)
             .select(self.active)
-            .highlight_style(Style::new().bold().cyan().reversed())
+            // Dark text on the accent, like sladder's current tab.
+            .highlight_style(Style::new().fg(Color::Black).bg(Color::Blue))
             .divider("│");
         frame.render_widget(tabs, tabs_area);
         frame.render_widget(Line::from(me).dim().right_aligned(), me_area);
@@ -718,6 +734,10 @@ mod tests {
         let mut ui = loaded_ui();
         let screen = screen(&mut ui, 80, 16);
         println!("{screen}");
+        let rows: Vec<&str> = screen.lines().collect();
+        assert!(rows[0].starts_with(" kvidre   1 Home"));
+        assert_eq!(rows[1], "", "blank row between header and posts");
+        assert!(rows[2].starts_with("▌ @yunta"));
         assert!(screen.contains("1 Home"));
         assert!(screen.contains("2 Mentions"));
         assert!(screen.contains("@yoda"));
