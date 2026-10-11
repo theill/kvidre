@@ -8,7 +8,9 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 const BASE: &str = "https://api.x.com/2";
-const TWEET_FIELDS: &str = "created_at,author_id,note_tweet";
+const TWEET_FIELDS: &str = "created_at,author_id,note_tweet,referenced_tweets";
+// Pull in reposted originals and their authors so reposts show in full.
+const EXPANSIONS: &str = "author_id,referenced_tweets.id,referenced_tweets.id.author_id";
 
 #[derive(Deserialize)]
 pub struct Post {
@@ -18,6 +20,22 @@ pub struct Post {
     pub created_at: Option<String>,
     /// Full text of posts longer than 280 characters.
     pub note_tweet: Option<NoteTweet>,
+    #[serde(default)]
+    pub referenced_tweets: Vec<Reference>,
+}
+
+impl Post {
+    pub fn full_text(&self) -> &str {
+        self.note_tweet.as_ref().map_or(&self.text, |n| &n.text)
+    }
+}
+
+/// A post this one reposts, quotes or replies to.
+#[derive(Deserialize)]
+pub struct Reference {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +54,8 @@ pub struct User {
 pub struct Includes {
     #[serde(default)]
     pub users: Vec<User>,
+    #[serde(default)]
+    pub tweets: Vec<Post>,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +64,24 @@ pub struct Page {
     pub data: Vec<Post>,
     #[serde(default)]
     pub includes: Includes,
+}
+
+impl Page {
+    pub fn user(&self, id: Option<&str>) -> Option<&User> {
+        self.includes
+            .users
+            .iter()
+            .find(|u| Some(u.id.as_str()) == id)
+    }
+
+    /// The original post if `post` is a repost and X included it.
+    pub fn reposted(&self, post: &Post) -> Option<&Post> {
+        let reference = post
+            .referenced_tweets
+            .iter()
+            .find(|r| r.kind == "retweeted")?;
+        self.includes.tweets.iter().find(|t| t.id == reference.id)
+    }
 }
 
 #[derive(Deserialize)]
@@ -103,7 +141,7 @@ impl Client {
         let query = [
             ("max_results", count.to_string()),
             ("tweet.fields", TWEET_FIELDS.into()),
-            ("expansions", "author_id".into()),
+            ("expansions", EXPANSIONS.into()),
             ("user.fields", "username,name".into()),
         ];
         self.send(|http| http.get(&url).query(&query))
