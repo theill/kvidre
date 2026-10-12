@@ -4,12 +4,12 @@ mod tui;
 mod view;
 
 use anyhow::{Result, bail};
-use api::{Client, Page, UserPage};
+use api::{ApiError, Client, Page, UserPage};
 use auth::{Config, Session};
 use clap::{Parser, Subcommand};
 use jiff::Zoned;
 use std::io::{IsTerminal, Read};
-use view::{PostView, post_url};
+use view::{PostView, post_url, reply_intent_url};
 
 #[derive(Parser)]
 #[command(
@@ -124,8 +124,20 @@ fn main() -> Result<()> {
         }
         Command::Reply { post, text } => {
             let mut client = Client::load()?;
-            let created = client.post(&text_or_stdin(text)?, Some(&post_id(&post)?))?;
-            println!("{}", post_url(&client.session.username, &created.id));
+            let (text, id) = (text_or_stdin(text)?, post_id(&post)?);
+            match client.post(&text, Some(&id)) {
+                Ok(created) => println!("{}", post_url(&client.session.username, &created.id)),
+                Err(e)
+                    if e.downcast_ref::<ApiError>()
+                        .is_some_and(|e| e.reply_restricted()) =>
+                {
+                    // X takes this reply on x.com but not from apps, so hand it over there.
+                    let url = reply_intent_url(&id, &text);
+                    eprintln!("{e}\nOpening it on x.com, press Reply to post:\n\n  {url}");
+                    let _ = open::that(&url);
+                }
+                Err(e) => return Err(e),
+            }
         }
         Command::Delete { post } => {
             Client::load()?.delete(&post_id(&post)?)?;

@@ -57,6 +57,16 @@ pub fn post_url(username: &str, id: &str) -> String {
     format!("https://x.com/{username}/status/{id}")
 }
 
+/// Opens x.com with the reply already written, for replies X won't take from apps.
+pub fn reply_intent_url(id: &str, text: &str) -> String {
+    reqwest::Url::parse_with_params(
+        "https://x.com/intent/post",
+        &[("in_reply_to", id), ("text", text)],
+    )
+    .expect("static base URL is valid")
+    .to_string()
+}
+
 /// X returns post text with `&`, `<` and `>` HTML-escaped.
 fn unescape(text: &str) -> String {
     text.replace("&lt;", "<")
@@ -122,6 +132,14 @@ pub mod tests {
 
     pub fn repost_page() -> Page {
         serde_json::from_str(REPOST_PAGE).unwrap()
+    }
+
+    #[test]
+    fn reply_intent_url_encodes_text() {
+        assert_eq!(
+            reply_intent_url("123", "Tak & hej, æøå #1?"),
+            "https://x.com/intent/post?in_reply_to=123&text=Tak+%26+hej%2C+%C3%A6%C3%B8%C3%A5+%231%3F"
+        );
     }
 
     #[test]

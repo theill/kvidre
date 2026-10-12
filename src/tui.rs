@@ -4,7 +4,7 @@
 //! loads when first opened, and again only when asked (R reload, m more).
 
 use crate::api::{self, Client, Page, User, UserPage};
-use crate::view::PostView;
+use crate::view::{PostView, reply_intent_url};
 use anyhow::{Result, bail};
 use jiff::{Timestamp, Zoned};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -854,6 +854,18 @@ impl App {
                 }
             }
             Err(e) => {
+                let restricted = e
+                    .downcast_ref::<api::ApiError>()
+                    .is_some_and(|e| e.reply_restricted());
+                if restricted
+                    && let Some(post) = &reply_to
+                    && open_in_browser(&reply_intent_url(&post.id, body)).is_ok()
+                {
+                    self.ui.status =
+                        "X only takes this reply on x.com. Opened it there, press Reply to post."
+                            .into();
+                    return Ok(());
+                }
                 self.ui.error(e);
                 // Keep the draft so nothing typed is lost.
                 self.ui.mode = Mode::Compose { reply_to, text };

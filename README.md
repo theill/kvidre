@@ -166,7 +166,7 @@ You can also revoke `kvidre`'s access to your account at any time in X under **S
 | `403` with `client-not-enrolled` | Your app isn't attached to a Project. Attach it in the console, then run `kvidre login` again. |
 | `403` when posting | The app's permissions are Read only. Switch to **Read and write**, then run `kvidre login` again. |
 | `403` with `duplicate content` | You already posted the same text. Change it and post again. |
-| `403` with `You can only reply to or quote posts where you are mentioned or are the author` | Since February 2026, X blocks replies and quote posts from self-serve API apps unless the post mentions you or is your own. It's X's rule for apps, not your account, so replying on x.com still works. In the TUI, press `o` to open the post there. |
+| `403` with `You can only reply to or quote posts where you are mentioned or are the author` | Since February 2026, X blocks replies and quote posts from self-serve API apps unless the post mentions you or is your own. It's X's rule for apps, not your account, so replying on x.com still works. kvidre opens x.com with your reply already written, so you only press **Reply**. |
 | `401` / `unauthorized_client` at login | The app type is a confidential client (Web App or Bot). Switch it to **Native App**, or add `--client-secret YOUR_SECRET` to the login command. |
 | `402` | You're out of API credits. Top up in the developer console. |
 | `429` | Rate limited by X. Wait a few minutes. |

@@ -1,11 +1,12 @@
 //! Thin client over the handful of X API v2 endpoints kvidre uses.
 
 use crate::auth::{Config, Session};
-use anyhow::{Result, bail};
+use anyhow::Result;
 use reqwest::blocking::{Client as Http, RequestBuilder, Response};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use std::fmt;
 
 const BASE: &str = "https://api.x.com/2";
 const TWEET_FIELDS: &str = "created_at,author_id,note_tweet,referenced_tweets";
@@ -148,43 +149,73 @@ pub fn check(resp: Response) -> Result<Response> {
         return Ok(resp);
     }
     let body = resp.text().unwrap_or_default();
-    bail!(explain(status.as_u16(), &body))
+    Err(ApiError::new(status.as_u16(), &body).into())
 }
 
-/// Leads with X's own reason, since the TUI shows errors on one line and
-/// a long generic hint would push it out of view.
-fn explain(status: u16, body: &str) -> String {
-    let mut reason = reason(body).unwrap_or_else(|| body.trim().to_string());
-    if !reason.is_empty() && !reason.ends_with(['.', '!', '?']) {
-        reason.push('.');
+/// A non-2xx response from X. Displays X's own reason first, since the TUI
+/// shows errors on one line and a long generic hint would push it out of view.
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: u16,
+    reason: String,
+}
+
+impl ApiError {
+    fn new(status: u16, body: &str) -> Self {
+        let mut reason = reason(body).unwrap_or_else(|| body.trim().to_string());
+        if !reason.is_empty() && !reason.ends_with(['.', '!', '?']) {
+            reason.push('.');
+        }
+        Self { status, reason }
     }
-    let lower = reason.to_lowercase();
-    let hint = match status {
-        402 => "Top up credits in the developer console.",
-        403 if lower.contains("duplicate") => {
-            "You already posted this text. Change it and try again."
+
+    fn mentions(&self, text: &str) -> bool {
+        self.reason.to_lowercase().contains(text)
+    }
+
+    /// X refuses replies from self-serve apps unless the post mentions you or
+    /// is your own, though the same reply works on x.com.
+    pub fn reply_restricted(&self) -> bool {
+        self.status == 403 && self.mentions("repl") && !self.mentions("duplicate")
+    }
+
+    fn hint(&self) -> &'static str {
+        match self.status {
+            402 => "Top up credits in the developer console.",
+            403 if self.mentions("duplicate") => {
+                "You already posted this text. Change it and try again."
+            }
+            403 if self.reply_restricted() => {
+                "This is X's rule for apps, not your account. Replying on x.com still works."
+            }
+            403 if self.mentions("client-not-enrolled") || self.mentions("project") => {
+                "Attach the app to a Project in the developer console, then run `kvidre login` again."
+            }
+            403 => {
+                "Check the app has credits and Read and write permission in the developer console."
+            }
+            429 => "Rate limited. Try again later.",
+            _ => "",
         }
-        403 if lower.contains("repl") => {
-            "This is X's rule for apps, not your account. Replying on x.com still works."
-        }
-        403 if lower.contains("client-not-enrolled") || lower.contains("project") => {
-            "Attach the app to a Project in the developer console, then run `kvidre login` again."
-        }
-        403 => "Check the app has credits and Read and write permission in the developer console.",
-        429 => "Rate limited. Try again later.",
-        _ => "",
-    };
-    let text = [reason.as_str(), hint]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if text.is_empty() {
-        format!("X API returned {status}.")
-    } else {
-        format!("X API {status}: {text}")
     }
 }
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let text = [self.reason.as_str(), self.hint()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if text.is_empty() {
+            write!(f, "X API returned {}.", self.status)
+        } else {
+            write!(f, "X API {}: {text}", self.status)
+        }
+    }
+}
+
+impl std::error::Error for ApiError {}
 
 /// X's explanation from an error body like
 /// `{"detail": "...", "reason": "...", "errors": [{"message": "..."}]}`.
@@ -331,6 +362,10 @@ impl Client {
 mod tests {
     use super::*;
 
+    fn explain(status: u16, body: &str) -> String {
+        ApiError::new(status, body).to_string()
+    }
+
     #[test]
     fn explain_leads_with_x_reason() {
         let duplicate = r#"{"detail":"You are not allowed to create a Tweet with duplicate content.","type":"about:blank","title":"Forbidden","status":403}"#;
@@ -338,12 +373,14 @@ mod tests {
             explain(403, duplicate),
             "X API 403: You are not allowed to create a Tweet with duplicate content. You already posted this text. Change it and try again."
         );
+        assert!(!ApiError::new(403, duplicate).reply_restricted());
 
         let reply = r#"{"detail":"You can only reply to or quote posts where you are mentioned or are the author.","status":403}"#;
         assert_eq!(
             explain(403, reply),
             "X API 403: You can only reply to or quote posts where you are mentioned or are the author. This is X's rule for apps, not your account. Replying on x.com still works."
         );
+        assert!(ApiError::new(403, reply).reply_restricted());
 
         let enrolled = r#"{"detail":"When authenticating requests to the Twitter API v2 endpoints, you must use keys and tokens from a Twitter developer App that is attached to a Project.","reason":"client-not-enrolled","title":"Client Forbidden"}"#;
         assert!(explain(403, enrolled).contains("Attach the app to a Project"));
