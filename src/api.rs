@@ -148,14 +148,63 @@ pub fn check(resp: Response) -> Result<Response> {
         return Ok(resp);
     }
     let body = resp.text().unwrap_or_default();
-    match status.as_u16() {
-        402 => bail!("X API: out of credits (402). Top up in the developer console.\n{body}"),
-        403 => bail!(
-            "X API: forbidden (403). Check the app has credits and Read and write permission in the developer console.\n{body}"
-        ),
-        429 => bail!("X API: rate limited (429). Try again later.\n{body}"),
-        _ => bail!("X API returned {status}\n{body}"),
+    bail!(explain(status.as_u16(), &body))
+}
+
+/// Leads with X's own reason, since the TUI shows errors on one line and
+/// a long generic hint would push it out of view.
+fn explain(status: u16, body: &str) -> String {
+    let mut reason = reason(body).unwrap_or_else(|| body.trim().to_string());
+    if !reason.is_empty() && !reason.ends_with(['.', '!', '?']) {
+        reason.push('.');
     }
+    let lower = reason.to_lowercase();
+    let hint = match status {
+        402 => "Top up credits in the developer console.",
+        403 if lower.contains("duplicate") => {
+            "You already posted this text. Change it and try again."
+        }
+        403 if lower.contains("repl") => {
+            "This is X's rule for apps, not your account. Replying on x.com still works."
+        }
+        403 if lower.contains("client-not-enrolled") || lower.contains("project") => {
+            "Attach the app to a Project in the developer console, then run `kvidre login` again."
+        }
+        403 => "Check the app has credits and Read and write permission in the developer console.",
+        429 => "Rate limited. Try again later.",
+        _ => "",
+    };
+    let text = [reason.as_str(), hint]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.is_empty() {
+        format!("X API returned {status}.")
+    } else {
+        format!("X API {status}: {text}")
+    }
+}
+
+/// X's explanation from an error body like
+/// `{"detail": "...", "reason": "...", "errors": [{"message": "..."}]}`.
+fn reason(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let mut parts: Vec<&str> = Vec::new();
+    for key in ["detail", "reason"] {
+        if let Some(s) = value[key].as_str() {
+            parts.push(s);
+        }
+    }
+    if let Some(errors) = value["errors"].as_array() {
+        parts.extend(errors.iter().filter_map(|e| e["message"].as_str()));
+    }
+    let parts: Vec<&str> = parts
+        .into_iter()
+        .map(|s| s.trim().trim_end_matches('.'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| format!("{}.", parts.join(". ")))
 }
 
 pub struct Client {
@@ -275,5 +324,43 @@ impl Client {
         let url = format!("{BASE}/tweets/{id}");
         let _: serde_json::Value = self.send(|http| http.delete(&url))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explain_leads_with_x_reason() {
+        let duplicate = r#"{"detail":"You are not allowed to create a Tweet with duplicate content.","type":"about:blank","title":"Forbidden","status":403}"#;
+        assert_eq!(
+            explain(403, duplicate),
+            "X API 403: You are not allowed to create a Tweet with duplicate content. You already posted this text. Change it and try again."
+        );
+
+        let reply = r#"{"detail":"You can only reply to or quote posts where you are mentioned or are the author.","status":403}"#;
+        assert_eq!(
+            explain(403, reply),
+            "X API 403: You can only reply to or quote posts where you are mentioned or are the author. This is X's rule for apps, not your account. Replying on x.com still works."
+        );
+
+        let enrolled = r#"{"detail":"When authenticating requests to the Twitter API v2 endpoints, you must use keys and tokens from a Twitter developer App that is attached to a Project.","reason":"client-not-enrolled","title":"Client Forbidden"}"#;
+        assert!(explain(403, enrolled).contains("Attach the app to a Project"));
+
+        let invalid = r#"{"detail":"One or more parameters to your request was invalid.","errors":[{"message":"Please include either text or media in your Tweet."}]}"#;
+        assert_eq!(
+            explain(400, invalid),
+            "X API 400: One or more parameters to your request was invalid. Please include either text or media in your Tweet."
+        );
+    }
+
+    #[test]
+    fn explain_falls_back_to_raw_body() {
+        assert_eq!(
+            explain(403, "Forbidden"),
+            "X API 403: Forbidden. Check the app has credits and Read and write permission in the developer console."
+        );
+        assert_eq!(explain(500, ""), "X API returned 500.");
     }
 }
