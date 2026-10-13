@@ -52,7 +52,7 @@ struct TokenResponse {
     scope: Option<String>,
 }
 
-fn config_dir() -> Result<PathBuf> {
+pub fn config_dir() -> Result<PathBuf> {
     let dir = dirs::config_dir()
         .context("no config directory")?
         .join("kvidre");

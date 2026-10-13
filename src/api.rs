@@ -1,7 +1,7 @@
 //! Thin client over the handful of X API v2 endpoints kvidre uses.
 
 use crate::auth::{Config, Session};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use reqwest::blocking::{Client as Http, RequestBuilder, Response};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -17,6 +17,8 @@ const EXPANSIONS: &str = "author_id,referenced_tweets.id,referenced_tweets.id.au
 // X developer console for current rates.
 pub const COST_READ_POST: f64 = 0.005;
 pub const COST_READ_USER: f64 = 0.010;
+/// Longest search query X accepts on self-serve plans.
+const MAX_QUERY_LEN: usize = 512;
 const COST_CREATE_POST: f64 = 0.015;
 const COST_CREATE_POST_WITH_URL: f64 = 0.20;
 
@@ -238,6 +240,32 @@ fn reason(body: &str) -> Option<String> {
     (!parts.is_empty()).then(|| format!("{}.", parts.join(". ")))
 }
 
+/// The parameter asking for the next, older page; its name varies by endpoint.
+fn paging(key: &'static str, page: Option<&str>) -> Vec<(&'static str, String)> {
+    page.map(|token| (key, token.to_string()))
+        .into_iter()
+        .collect()
+}
+
+/// A search for posts by any of the accounts, e.g. `from:20 OR from:30`.
+fn favorites_query(user_ids: &[&str]) -> Result<String> {
+    if user_ids.is_empty() {
+        bail!("no favorites yet");
+    }
+    let query = user_ids
+        .iter()
+        .map(|id| format!("from:{id}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    if query.len() > MAX_QUERY_LEN {
+        bail!(
+            "too many favorites for one search ({} characters, X allows {MAX_QUERY_LEN}); remove a few",
+            query.len()
+        );
+    }
+    Ok(query)
+}
+
 pub struct Client {
     http: Http,
     config: Config,
@@ -263,26 +291,20 @@ impl Client {
         Ok(check(resp)?.json()?)
     }
 
+    /// Fetches a page of posts; `query` carries the endpoint's own parameters.
     fn timeline(
         &mut self,
         path: &str,
         count: u32,
-        page: Option<&str>,
-        exclude: Option<&str>,
+        mut query: Vec<(&'static str, String)>,
     ) -> Result<Page> {
         let url = format!("{BASE}{path}");
-        let mut query = vec![
+        query.extend([
             ("max_results", count.to_string()),
             ("tweet.fields", TWEET_FIELDS.into()),
             ("expansions", EXPANSIONS.into()),
             ("user.fields", "username,name".into()),
-        ];
-        if let Some(token) = page {
-            query.push(("pagination_token", token.into()));
-        }
-        if let Some(exclude) = exclude {
-            query.push(("exclude", exclude.into()));
-        }
+        ]);
         self.send(|http| http.get(&url).query(&query))
     }
 
@@ -298,14 +320,26 @@ impl Client {
             "/users/{}/timelines/reverse_chronological",
             self.session.user_id
         );
-        let exclude = originals_only.then_some("replies,retweets");
-        self.timeline(&path, count.clamp(1, 100), page, exclude)
+        let mut query = paging("pagination_token", page);
+        if originals_only {
+            query.push(("exclude", "replies,retweets".into()));
+        }
+        self.timeline(&path, count.clamp(1, 100), query)
     }
 
     /// Posts mentioning you. X accepts 5–100.
     pub fn mentions(&mut self, count: u32, page: Option<&str>) -> Result<Page> {
         let path = format!("/users/{}/mentions", self.session.user_id);
-        self.timeline(&path, count.clamp(5, 100), page, None)
+        self.timeline(&path, count.clamp(5, 100), paging("pagination_token", page))
+    }
+
+    /// Everything the given accounts posted in the last 7 days (the reach of
+    /// X's recent search), newest first, in one call. X accepts 10–100.
+    pub fn favorites(&mut self, user_ids: &[&str], count: u32, page: Option<&str>) -> Result<Page> {
+        let mut query = paging("next_token", page);
+        query.push(("query", favorites_query(user_ids)?));
+        query.push(("sort_order", "recency".into()));
+        self.timeline("/tweets/search/recent", count.clamp(10, 100), query)
     }
 
     pub fn lookup_user(&mut self, username: &str) -> Result<User> {
@@ -317,7 +351,7 @@ impl Client {
     /// A user's recent posts. X accepts 5–100.
     pub fn user_posts(&mut self, user_id: &str, count: u32, page: Option<&str>) -> Result<Page> {
         let path = format!("/users/{user_id}/tweets");
-        self.timeline(&path, count.clamp(5, 100), page, None)
+        self.timeline(&path, count.clamp(5, 100), paging("pagination_token", page))
     }
 
     /// Accounts you follow, most recently followed first. X accepts 1–1000.
@@ -389,6 +423,23 @@ mod tests {
         assert_eq!(
             explain(400, invalid),
             "X API 400: One or more parameters to your request was invalid. Please include either text or media in your Tweet."
+        );
+    }
+
+    #[test]
+    fn favorites_query_joins_accounts_within_limit() {
+        assert_eq!(favorites_query(&["20"]).unwrap(), "from:20");
+        assert_eq!(
+            favorites_query(&["20", "30"]).unwrap(),
+            "from:20 OR from:30"
+        );
+        assert!(favorites_query(&[]).is_err());
+        let many = ["1234567890123456789"; 30];
+        assert!(
+            favorites_query(&many)
+                .unwrap_err()
+                .to_string()
+                .contains("too many favorites")
         );
     }
 

@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod favorites;
 mod tui;
 mod view;
 
@@ -77,6 +78,19 @@ enum Command {
     },
     /// Stop following an account
     Unfollow { username: String },
+    /// Read your favorites' posts from the last 7 days, newest first
+    #[command(visible_alias = "fav")]
+    Favorites {
+        #[arg(short = 'n', long, default_value_t = 10)]
+        count: u32,
+        /// Only list who your favorites are (free, no API call)
+        #[arg(short, long)]
+        list: bool,
+    },
+    /// Add an account to your favorites
+    Favorite { username: String },
+    /// Remove an account from your favorites
+    Unfavorite { username: String },
 }
 
 fn main() -> Result<()> {
@@ -149,6 +163,47 @@ fn main() -> Result<()> {
             let user = client.lookup_user(username.trim_start_matches('@'))?;
             client.unfollow(&user.id)?;
             println!("Unfollowed @{}", user.username);
+        }
+        Command::Favorites { count, list } => {
+            let saved = favorites::load()?;
+            if saved.is_empty() {
+                println!("No favorites yet. Add one with `kvidre favorite <username>`.");
+            } else if list {
+                for favorite in &saved {
+                    println!("@{}", favorite.username);
+                }
+            } else {
+                let ids: Vec<&str> = saved.iter().map(|f| f.id.as_str()).collect();
+                print_page(&Client::load()?.favorites(&ids, count, None)?)
+            }
+        }
+        Command::Favorite { username } => {
+            let mut saved = favorites::load()?;
+            let username = username.trim_start_matches('@');
+            if saved
+                .iter()
+                .any(|f| f.username.eq_ignore_ascii_case(username))
+            {
+                println!("@{username} is already a favorite");
+            } else {
+                let user = Client::load()?.lookup_user(username)?;
+                favorites::toggle(&mut saved, &user.id, &user.username);
+                favorites::save(&saved)?;
+                println!("Added @{} to favorites", user.username);
+            }
+        }
+        Command::Unfavorite { username } => {
+            let mut saved = favorites::load()?;
+            let username = username.trim_start_matches('@');
+            let Some(i) = saved
+                .iter()
+                .position(|f| f.username.eq_ignore_ascii_case(username))
+            else {
+                bail!("@{username} is not a favorite");
+            };
+            let removed = saved.remove(i);
+            favorites::save(&saved)?;
+            println!("Removed @{} from favorites", removed.username);
         }
     }
     Ok(())

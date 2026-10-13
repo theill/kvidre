@@ -4,6 +4,7 @@
 //! loads when first opened, and again only when asked (R reload, m more).
 
 use crate::api::{self, Client, Page, User, UserPage};
+use crate::favorites::{self, Favorite};
 use crate::view::{PostView, reply_intent_url};
 use anyhow::{Result, bail};
 use jiff::{Timestamp, Zoned};
@@ -23,13 +24,14 @@ const MAX_POST_CHARS: usize = 280;
 /// Wrapped lines of post text shown in a feed; longer posts end in "…".
 const MAX_POST_LINES: usize = 10;
 const HINTS: &str = "c post · r reply · o open · space expand · R reload · m more · ? help";
-const FOLLOWS_HINTS: &str = "U unfollow · Enter posts · o profile · m more · ? help";
+const FOLLOWS_HINTS: &str = "U unfollow · s favorite · Enter posts · o profile · m more · ? help";
 
 pub fn run() -> Result<()> {
     // Load credentials before taking over the terminal so errors print normally.
     let client = Client::load()?;
+    let favorites = favorites::load()?;
     let mut terminal = ratatui::init();
-    let result = App::new(client).run(&mut terminal);
+    let result = App::new(client, favorites).run(&mut terminal);
     ratatui::restore();
     result
 }
@@ -41,6 +43,8 @@ enum Feed {
         originals_only: bool,
     },
     Mentions,
+    /// Everything your favorite accounts posted, newest first.
+    Favorites,
     User {
         id: String,
         username: String,
@@ -60,6 +64,7 @@ impl Feed {
                 originals_only: false,
             } => "Following (all)".into(),
             Feed::Mentions => "Mentions".into(),
+            Feed::Favorites => "Favorites".into(),
             Feed::User { username, .. } => format!("@{username}"),
         }
     }
@@ -104,7 +109,9 @@ impl Tab {
 
     /// True when the last item is selected, so moving down should load more.
     fn at_end(&self) -> bool {
-        self.list.selected().is_some_and(|i| i.saturating_add(1) >= self.len())
+        self.list
+            .selected()
+            .is_some_and(|i| i.saturating_add(1) >= self.len())
     }
 }
 
@@ -142,6 +149,7 @@ enum Mode {
 struct Ui {
     me_id: String,
     me: String,
+    favorites: Vec<Favorite>,
     tabs: Vec<Tab>,
     active: usize,
     mode: Mode,
@@ -150,15 +158,17 @@ struct Ui {
 }
 
 impl Ui {
-    fn new(me_id: String, me: String) -> Self {
+    fn new(me_id: String, me: String, favorites: Vec<Favorite>) -> Self {
         Self {
             me_id,
             me,
+            favorites,
             tabs: vec![
                 Tab::new(Feed::Following {
                     originals_only: true,
                 }),
                 Tab::new(Feed::Mentions),
+                Tab::new(Feed::Favorites),
             ],
             active: 0,
             mode: Mode::Browse,
@@ -178,6 +188,48 @@ impl Ui {
     fn is_mine(&self, post: &PostView) -> bool {
         // Undoing a repost needs a different endpoint, so only originals are deletable.
         post.author_id.as_deref() == Some(self.me_id.as_str()) && !post.is_repost
+    }
+
+    fn is_favorite(&self, id: Option<&str>) -> bool {
+        self.favorites.iter().any(|f| Some(f.id.as_str()) == id)
+    }
+
+    /// The account `s` stars: the selected account in Follows, the owner of a
+    /// user tab, or else the author of the selected post.
+    fn favorite_target(&self) -> Option<(String, String)> {
+        let tab = self.tab();
+        if let Some(user) = tab.selected_user() {
+            return Some((user.id.clone(), user.username.clone()));
+        }
+        if let Feed::User { id, username } = &tab.feed {
+            return Some((id.clone(), username.clone()));
+        }
+        let post = tab.selected()?;
+        Some((post.author_id.clone()?, post.username.clone()))
+    }
+
+    /// Stars or unstars an account. Returns true if it's now a favorite.
+    fn toggle_favorite(&mut self, id: &str, username: &str) -> bool {
+        let added = favorites::toggle(&mut self.favorites, id, username);
+        let tab = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.feed == Feed::Favorites)
+            .expect("the Favorites tab is always open");
+        if added {
+            // Their posts aren't in the feed yet, so fetch it again on the next visit.
+            tab.loaded = false;
+        } else {
+            // Drop their posts right away rather than paying to reload.
+            tab.posts.retain(|post| {
+                post.author_id.as_deref() != Some(id)
+                    && post.reposted_by.as_deref() != Some(username)
+            });
+            let last = tab.posts.len().checked_sub(1);
+            let selected = tab.list.selected().unwrap_or(0);
+            tab.list.select(last.map(|last| selected.min(last)));
+        }
+        added
     }
 
     fn error(&mut self, error: anyhow::Error) {
@@ -275,8 +327,12 @@ impl Ui {
         let tab = &self.tabs[self.active];
         if tab.len() == 0 {
             let message = match (tab.loaded, &tab.feed) {
+                (_, Feed::Favorites) if self.favorites.is_empty() => {
+                    "No favorites yet. Press s on a post or account to add one."
+                }
                 (false, _) => "Not loaded yet. Press R to load.",
                 (true, Feed::Follows) => "You don't follow anyone.",
+                (true, Feed::Favorites) => "Your favorites haven't posted in the last 7 days.",
                 (true, _) => "No posts.",
             };
             let area = Rect {
@@ -297,7 +353,10 @@ impl Ui {
             tab.users
                 .iter()
                 .enumerate()
-                .map(|(i, user)| user_item(user, width, selected == Some(i)))
+                .map(|(i, user)| {
+                    let favorite = self.is_favorite(Some(&user.id));
+                    user_item(user, width, selected == Some(i), favorite)
+                })
                 .collect()
         } else {
             tab.posts
@@ -306,7 +365,8 @@ impl Ui {
                 .map(|(i, post)| {
                     let selected = selected == Some(i);
                     let expanded = selected && tab.expanded.as_ref() == Some(&post.id);
-                    post_item(post, &now, width, selected, expanded)
+                    let favorite = self.is_favorite(post.author_id.as_deref());
+                    post_item(post, &now, width, selected, expanded, favorite)
                 })
                 .collect()
         };
@@ -341,6 +401,7 @@ fn post_item<'a>(
     width: usize,
     selected: bool,
     expanded: bool,
+    favorite: bool,
 ) -> ListItem<'a> {
     let bar = if selected {
         Span::from("▌ ").yellow()
@@ -351,6 +412,9 @@ fn post_item<'a>(
         bar.clone(),
         Span::from(format!("@{}", post.username)).bold().cyan(),
     ];
+    if favorite {
+        header.push(Span::from(" ★").yellow());
+    }
     if !post.name.is_empty() {
         header.push(Span::from(format!(" {}", post.name)));
     }
@@ -376,17 +440,21 @@ fn post_item<'a>(
 }
 
 /// One followed account: handle and name, then up to two lines of bio.
-fn user_item<'a>(user: &User, width: usize, selected: bool) -> ListItem<'a> {
+fn user_item<'a>(user: &User, width: usize, selected: bool, favorite: bool) -> ListItem<'a> {
     let bar = if selected {
         Span::from("▌ ").yellow()
     } else {
         Span::from("  ")
     };
-    let mut lines = vec![Line::from(vec![
+    let mut header = vec![
         bar.clone(),
         Span::from(format!("@{}", user.username)).bold().cyan(),
-        Span::from(format!(" {}", user.name)),
-    ])];
+    ];
+    if favorite {
+        header.push(Span::from(" ★").yellow());
+    }
+    header.push(Span::from(format!(" {}", user.name)));
+    let mut lines = vec![Line::from(header)];
     // Flatten line breaks so more of the bio fits in two lines.
     let bio = user
         .description
@@ -489,7 +557,7 @@ fn render_confirm(frame: &mut Frame, title: &str, question: &str) {
 }
 
 fn render_help(frame: &mut Frame) {
-    const KEYS: [(&str, &str); 18] = [
+    const KEYS: [(&str, &str); 19] = [
         ("j / k  ↓ / ↑", "move between posts"),
         ("g / G", "first / last post"),
         ("PgDn / PgUp", "jump 5 posts"),
@@ -503,6 +571,7 @@ fn render_help(frame: &mut Frame) {
         ("space", "expand / collapse a long post"),
         ("d", "delete your own post"),
         ("u", "open a user's posts"),
+        ("s", "star / unstar as a favorite"),
         ("F", "accounts you follow (≈$0.01 each)"),
         ("U", "Follows: unfollow selected account"),
         ("x", "close user or Follows tab"),
@@ -545,10 +614,11 @@ struct App {
 }
 
 impl App {
-    fn new(client: Client) -> Self {
+    fn new(client: Client, favorites: Vec<Favorite>) -> Self {
         let ui = Ui::new(
             client.session.user_id.clone(),
             client.session.username.clone(),
+            favorites,
         );
         Self {
             client,
@@ -719,6 +789,10 @@ impl App {
                     self.ui.status = "Press F to list who you follow, then U to unfollow.".into();
                 }
             }
+            KeyCode::Char('s') => match self.ui.favorite_target() {
+                Some((id, username)) => self.toggle_favorite(&id, &username),
+                None => self.ui.status = "Select a post or account to star.".into(),
+            },
             KeyCode::Char('d') => match self.ui.tab().selected() {
                 Some(post) if self.ui.is_mine(post) => self.ui.mode = Mode::ConfirmDelete,
                 Some(_) => self.ui.status = "You can only delete your own posts.".into(),
@@ -768,6 +842,9 @@ impl App {
     fn load(&mut self, terminal: &mut DefaultTerminal, more: bool) -> Result<()> {
         let tab = self.ui.tab();
         let feed = tab.feed.clone();
+        if feed == Feed::Favorites && self.ui.favorites.is_empty() {
+            return Ok(());
+        }
         let token = match (more, tab.next_token.clone()) {
             (false, _) => None,
             (true, Some(token)) => Some(token),
@@ -788,6 +865,12 @@ impl App {
                 .client
                 .mentions(PAGE_SIZE, token)
                 .map(|page| self.ui.add_page(page, more)),
+            Feed::Favorites => {
+                let ids: Vec<&str> = self.ui.favorites.iter().map(|f| f.id.as_str()).collect();
+                self.client
+                    .favorites(&ids, PAGE_SIZE, token)
+                    .map(|page| self.ui.add_page(page, more))
+            }
             Feed::User { id, .. } => self
                 .client
                 .user_posts(id, PAGE_SIZE, token)
@@ -801,6 +884,15 @@ impl App {
             self.ui.error(e);
         }
         Ok(())
+    }
+
+    fn toggle_favorite(&mut self, id: &str, username: &str) {
+        let added = self.ui.toggle_favorite(id, username);
+        match favorites::save(&self.ui.favorites) {
+            Ok(()) if added => self.ui.status = format!("★ @{username} added to Favorites."),
+            Ok(()) => self.ui.status = format!("@{username} removed from Favorites."),
+            Err(e) => self.ui.error(e),
+        }
     }
 
     fn open_url(&mut self, url: &str) {
@@ -989,7 +1081,7 @@ mod tests {
     }
 
     fn loaded_ui() -> Ui {
-        let mut ui = Ui::new("10".into(), "yoda".into());
+        let mut ui = Ui::new("10".into(), "yoda".into(), Vec::new());
         ui.add_page(repost_page(), false);
         ui
     }
@@ -1055,7 +1147,7 @@ mod tests {
 
     #[test]
     fn unloaded_feed_explains_how_to_load() {
-        let mut ui = Ui::new("10".into(), "yoda".into());
+        let mut ui = Ui::new("10".into(), "yoda".into(), Vec::new());
         assert!(screen(&mut ui, 60, 10).contains("Press R to load"));
     }
 
@@ -1106,7 +1198,7 @@ mod tests {
     fn follows_ui() -> Ui {
         let mut ui = loaded_ui();
         ui.tabs.push(Tab::new(Feed::Follows));
-        ui.active = 2;
+        ui.active = ui.tabs.len() - 1;
         let page: UserPage = serde_json::from_str(
             r#"{"data": [
                 {"id": "20", "username": "yunta", "name": "Yunta",
@@ -1125,7 +1217,7 @@ mod tests {
         let screen = screen(&mut ui, 80, 14);
         println!("{screen}");
         let rows: Vec<&str> = screen.lines().collect();
-        assert!(rows[0].contains("3 Follows"));
+        assert!(rows[0].contains("4 Follows"));
         assert!(rows[2].starts_with("▌ @yunta Yunta"));
         assert!(rows[3].starts_with("▌ Building robots. Opinions my own."));
         assert_eq!(rows[4], "");
@@ -1142,7 +1234,9 @@ mod tests {
     fn follows_tab_shows_its_own_hints_and_unfollow_prompt() {
         let mut ui = follows_ui();
         ui.status.clear();
-        assert!(screen(&mut ui, 80, 14).contains("U unfollow · Enter posts · o profile"));
+        assert!(
+            screen(&mut ui, 80, 14).contains("U unfollow · s favorite · Enter posts · o profile")
+        );
         ui.mode = Mode::ConfirmUnfollow;
         assert!(screen(&mut ui, 80, 14).contains("Unfollow @yunta? y/n"));
     }
@@ -1170,6 +1264,51 @@ mod tests {
         assert!(rows[5].starts_with("▌ @yoda"));
         assert!(rows[6].starts_with("▌ RT @gone"));
         assert_eq!(rows[7], "");
+    }
+
+    #[test]
+    fn favorites_tab_explains_how_to_add_one() {
+        let mut ui = loaded_ui();
+        assert!(screen(&mut ui, 80, 6).contains("2 Mentions │ 3 Favorites"));
+        ui.active = 2;
+        assert!(screen(&mut ui, 80, 10).contains("No favorites yet. Press s"));
+    }
+
+    #[test]
+    fn starring_marks_authors_and_unstarring_drops_their_posts() {
+        let mut ui = loaded_ui();
+        // The selected post is @yunta's original, reposted by @yoda.
+        let (id, username) = ui.favorite_target().unwrap();
+        assert_eq!((id.as_str(), username.as_str()), ("20", "yunta"));
+        assert!(ui.toggle_favorite(&id, &username));
+        assert!(screen(&mut ui, 80, 16).contains("▌ @yunta ★ Yunta ·"));
+        assert!(!ui.tabs[2].loaded, "Favorites refetches on the next visit");
+
+        // In the Favorites tab, unstarring removes their posts without a reload.
+        ui.tabs[2].posts = ui.tabs[0].posts.clone();
+        ui.tabs[2].loaded = true;
+        ui.active = 2;
+        ui.tab_mut().list.select(Some(0));
+        assert!(!ui.toggle_favorite(&id, &username));
+        assert!(ui.favorites.is_empty());
+        assert_eq!(ui.tab().posts.len(), 1);
+        assert_eq!(ui.tab().list.selected(), Some(0));
+    }
+
+    #[test]
+    fn user_tabs_and_follows_star_the_account() {
+        let mut ui = follows_ui();
+        ui.tab_mut().list.select(Some(1));
+        assert_eq!(ui.favorite_target().unwrap().1, "quiet");
+        ui.toggle_favorite("30", "quiet");
+        assert!(screen(&mut ui, 80, 14).contains("▌ @quiet ★ Quiet One"));
+
+        ui.tabs.push(Tab::new(Feed::User {
+            id: "40".into(),
+            username: "robin".into(),
+        }));
+        ui.active = ui.tabs.len() - 1;
+        assert_eq!(ui.favorite_target().unwrap().1, "robin");
     }
 
     #[test]

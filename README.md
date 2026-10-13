@@ -3,7 +3,7 @@
 *Kvidre* is Danish for "to chirp". It's a small terminal client for X (Twitter). Read your timeline and mentions, then post and reply, from a full-screen TUI or from plain commands you can script. It uses the official X API v2.
 
 ```
- kvidre   1 Following │ 2 Mentions │ 3 @robin                         @you
+ kvidre   1 Following │ 2 Mentions │ 3 Favorites │ 4 @robin           @you
 
 ▌ @sparrow Sparrow · today 08:31
 ▌ Spring is here. The first chirp of the year is always the loudest one.
@@ -20,7 +20,8 @@ c post · r reply · o open · R reload · m more · ? help     ≈$0.050 this s
 ## Features
 
 - **A calm Following feed.** By default you see only original posts from people you follow, newest first, with no algorithm, replies or reposts. Press `f` to bring replies and reposts back.
-- **TUI** with Following, Mentions and per-user tabs. Reposts show the full original post, long posts aren't cut off, and times are in your local time zone.
+- **Favorites.** Star the few people you never want to miss with `s`, and read everything they post in one chronological Favorites tab.
+- **TUI** with Following, Mentions, Favorites and per-user tabs. Reposts show the full original post, long posts aren't cut off, and times are in your local time zone.
 - **Compose, reply, open in browser and delete** your own posts without leaving the terminal.
 - **Tidy who you follow.** List the accounts you follow with their bios and unfollow them in a keystroke.
 - **Scriptable CLI.** For example `kvidre post "hello"`, `echo "text" | kvidre post`, or `kvidre timeline -n 5`.
@@ -98,6 +99,8 @@ Run `kvidre` with no arguments (or `kvidre tui`). The Following tab loads when t
 
 Following shows original posts from you and the accounts you follow, newest first. Replies and reposts are left out on X's side, so you aren't billed for them. Press `f` to include them; the tab title changes to "Following (all)".
 
+Favorites shows everything your favorite accounts post (originals, replies and reposts) in one feed, newest first. Press `s` on someone's post, in their user tab or on their row in Follows to star them, and again to unstar. Starred accounts get a ★ next to their name. Starring is free and saved on your machine, and you don't have to follow someone to star them. The feed comes from X's recent search in a single call, so it reaches back 7 days and holds about 18 accounts.
+
 | Key | Action |
 |---|---|
 | `j` / `k`, `↓` / `↑` | Move between posts. `↓` on the last post loads older posts (paid read). |
@@ -113,6 +116,7 @@ Following shows original posts from you and the accounts you follow, newest firs
 | `o`, `Enter` | Open the selected post in your browser |
 | `d` | Delete one of your own posts (asks for confirmation) |
 | `u` / `x` | Open a user's posts in a new tab / close that tab |
+| `s` | Star or unstar as a favorite: the selected post's author, the account in a user tab, or the selected account in Follows |
 | `F` | List the accounts you follow (100 at a time, `m` for more) |
 | `U` | In Follows: unfollow the selected account (asks first) |
 | `?` | Show all keys |
@@ -135,6 +139,10 @@ kvidre reply https://x.com/robin/status/123 "nice!"               (alias: r)
 kvidre delete https://x.com/you/status/456
 kvidre follows -n 200         # accounts you follow, newest follows first
 kvidre unfollow @someone
+kvidre favorite robin         # star an account (one lookup, ≈$0.01)
+kvidre favorites              # your favorites' posts, newest first (alias: fav)
+kvidre favorites --list       # who you've starred (free)
+kvidre unfavorite robin
 kvidre whoami
 kvidre logout
 ```
@@ -147,8 +155,9 @@ kvidre logout
 |---|---|---|
 | Client ID | `~/.config/kvidre/config.json` | `~/Library/Application Support/kvidre/config.json` |
 | Login tokens | `~/.config/kvidre/session.json` | `~/Library/Application Support/kvidre/session.json` |
+| Favorites | `~/.config/kvidre/favorites.json` | `~/Library/Application Support/kvidre/favorites.json` |
 
-Both files are readable only by you (mode `0600`). `kvidre logout` deletes your login tokens. To remove everything:
+The client ID and token files are readable only by you (mode `0600`). `kvidre logout` deletes your login tokens. To remove everything:
 
 ```sh
 cargo uninstall kvidre
